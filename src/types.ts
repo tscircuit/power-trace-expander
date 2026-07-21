@@ -1,0 +1,59 @@
+import type { SimpleRouteJson, SimplifiedPcbTrace } from "@tscircuit/core";
+
+export type Point = { x: number; y: number };
+
+export type WireRoutePoint = Extract<
+  SimplifiedPcbTrace["route"][number],
+  { route_type: "wire" }
+>;
+
+export type PowerTraceExpanderInput = SimpleRouteJson;
+
+export type PowerTraceExpanderOutput = SimplifiedPcbTrace[];
+
+export type IndexedObstacle = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  layers: string[];
+  kind: "obstacle" | "trace" | "via";
+  connectionNames: string[];
+  traceIndex?: number;
+  routeStartIndex?: number;
+  routeEndIndex?: number;
+};
+
+export type CollisionQuery = {
+  start: Point;
+  end: Point;
+  layer: string;
+  width: number;
+  connectionNames: string[];
+  ignoreTraceIndex?: number;
+  ignoreRouteRange?: { start: number; end: number };
+};
+
+export type GridOffset = { x: number; y: number };
+
+export type GridRouteProblem = {
+  start: Point;
+  end: Point;
+  layer: string;
+  traceWidth: number;
+  gridSize: number;
+  gridOffset: GridOffset;
+  connectionNames: string[];
+  obstacleIndex: import("./SpatialObstacleIndex").SpatialObstacleIndex;
+  ignoreTraceIndex: number;
+  ignoreRouteRange: { start: number; end: number };
+  bounds: SimpleRouteJson["bounds"];
+  searchPadding: number;
+};
+
+export type GridRouteOutput = {
+  points: Point[];
+  traceWidth: number;
+  gridSize: number;
+  gridOffset: GridOffset;
+};

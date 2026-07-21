@@ -1,0 +1,56 @@
+{
+  "name": "@tscircuit/power-trace-expander",
+  "version": "0.0.1",
+  "description": "Obstacle-aware solver for expanding PCB traces toward their nominal widths",
+  "type": "module",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "solver:debug": "cosmos",
+    "solver:debug:build": "cosmos-export",
+    "test": "bun test",
+    "test:update": "bun test -u",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tscircuit/solver-utils": "^0.0.19",
+    "flatbush": "^4.6.2",
+    "graphics-debug": "^0.0.96"
+  },
+  "peerDependencies": {
+    "@tscircuit/core": "^0.0.1470",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "sharp": "0.35.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
+    "@tscircuit/core": "^0.0.1470",
+    "@types/bun": "latest",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "bun-match-svg": "^0.0.15",
+    "react": "^19.2.4",
+    "react-cosmos": "^7.3.0",
+    "react-cosmos-plugin-vite": "^7.3.0",
+    "react-dom": "^19.2.4",
+    "sharp": "^0.35.3",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.5"
+  }
+}
