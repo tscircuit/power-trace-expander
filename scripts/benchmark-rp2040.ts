@@ -25,6 +25,10 @@ const after = measureTraceWidths(problem, solver.getOutput());
 const conservativeAfter = measureTraceWidths(problem, solver.getOutput(), {
   segmentWidthSemantics: "endpoint-minimum",
 });
+const padClearanceViolations = {
+  beforeCleanup: solver.initialPadClearanceViolationCountByClearance,
+  afterCleanup: solver.remainingPadClearanceViolationCountByClearance,
+};
 const improvement = Object.fromEntries(
   [...after].map(([nominalWidth, afterMetric]) => {
     const beforeMetric = before.get(nominalWidth)!;
@@ -56,6 +60,7 @@ console.log(
         before: Object.fromEntries(conservativeBefore),
         after: Object.fromEntries(conservativeAfter),
       },
+      padClearanceViolations,
       improvement,
     },
     null,

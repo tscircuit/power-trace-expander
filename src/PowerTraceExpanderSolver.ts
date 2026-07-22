@@ -134,6 +134,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   unresolvedPadClearanceCount = 0;
   initialPadClearanceViolationCount = 0;
   remainingPadClearanceViolationCount = 0;
+  initialPadClearanceViolationCountByClearance: Record<string, number> = {};
+  remainingPadClearanceViolationCountByClearance: Record<string, number> = {};
 
   private readonly inflationAttemptsBySegment = new Map<string, number>();
   private readonly layerAttemptCountByTrace = new Map<number, number>();
@@ -315,7 +317,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       traces: this.traces,
       traceIndices: this.traceOrder,
       maxRerouteLength: 10,
-      desiredPadClearance: this.getDesiredPadClearance(1),
+      desiredPadClearance: this.options.powerTraceToPadClearance,
     });
   }
 
@@ -884,6 +886,14 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.remainingPadClearanceViolationCount = Number(
         stats.remainingPadClearanceViolationCount ?? 0,
       );
+      this.initialPadClearanceViolationCountByClearance = {
+        ...((stats.initialPadClearanceViolationCountByClearance ??
+          {}) as Record<string, number>),
+      };
+      this.remainingPadClearanceViolationCountByClearance = {
+        ...((stats.remainingPadClearanceViolationCountByClearance ??
+          {}) as Record<string, number>),
+      };
       this.activeSubSolver = null;
       this.phase = "complete";
       this.rebuildObstacleIndex();
@@ -1916,7 +1926,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     if (this.phase !== "cleanup") return baseClearance;
     return Math.max(
       baseClearance,
-      this.options.powerTraceToPadClearance ?? 0.15,
+      this.options.powerTraceToPadClearance ?? nominalWidth / 2,
     );
   }
 
@@ -2039,6 +2049,12 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
       remainingPadClearanceViolationCount:
         this.remainingPadClearanceViolationCount,
+      initialPadClearanceViolationCountByClearance: {
+        ...this.initialPadClearanceViolationCountByClearance,
+      },
+      remainingPadClearanceViolationCountByClearance: {
+        ...this.remainingPadClearanceViolationCountByClearance,
+      },
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }
