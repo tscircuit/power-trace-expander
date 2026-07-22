@@ -45,8 +45,8 @@ for (const [caseName, fixture] of Object.entries(simplifiedCases)) {
             point.width === 1,
         ),
       ).toBe(true);
-      expect(after.nominalCoverage).toBeGreaterThan(0.75);
-      expect(after.averageWidth).toBeGreaterThan(0.97);
+      expect(after.nominalCoverage).toBeGreaterThan(0.7);
+      expect(after.averageWidth).toBeGreaterThan(0.965);
       expect(after.minimumWidth).toBeGreaterThanOrEqual(0.875);
     } else {
       expect(after.nominalCoverage).toBe(1);

@@ -251,6 +251,10 @@ export class SpatialObstacleIndex {
           connectionNames: query.connectionNames,
           ignoreTraceIndex: query.ignoreTraceIndex,
           ignoreTraceIndices: query.ignoreTraceIndices,
+          ignoreRouteRange: query.ignoreRouteRange,
+          obstacleClearance: query.obstacleClearance,
+          blockSameNetObstacles: query.blockSameNetObstacles,
+          sameNetObstacleClearance: query.sameNetObstacleClearance,
         })
       ) {
         return true;
@@ -296,6 +300,18 @@ export class SpatialObstacleIndex {
     for (const itemIndex of indexedViaCandidates) {
       const item = this.items[itemIndex]!;
       if (item.kind !== "via" || item.exactShape?.type !== "circle") continue;
+      if (
+        item.traceIndex === query.ignoreTraceIndex &&
+        query.ignoreRouteRange &&
+        (item.routeEndIndex ?? -1) >= query.ignoreRouteRange.start &&
+        (item.routeStartIndex ?? Number.POSITIVE_INFINITY) <=
+          query.ignoreRouteRange.end
+      ) {
+        continue;
+      }
+      if (query.ignoreTraceIndices?.includes(item.traceIndex ?? -1)) {
+        continue;
+      }
       const key = `${item.traceIndex ?? -1}:${item.routeStartIndex ?? -1}`;
       if (seenTraceRoutePairs.has(key)) continue;
       seenTraceRoutePairs.add(key);
@@ -319,7 +335,12 @@ export class SpatialObstacleIndex {
   }
 
   private getCollisionCandidates(query: CollisionQuery) {
-    const radius = query.width / 2 + this.clearance;
+    const maximumClearance = Math.max(
+      this.clearance,
+      query.obstacleClearance ?? this.clearance,
+      query.sameNetObstacleClearance ?? 0,
+    );
+    const radius = query.width / 2 + maximumClearance;
     const queryBounds = {
       minX: Math.min(query.start.x, query.end.x) - radius,
       minY: Math.min(query.start.y, query.end.y) - radius,
@@ -355,8 +376,16 @@ export class SpatialObstacleIndex {
     // trace/via pairs from clearance errors. Different-net copper continues
     // to participate in both overlap and margin checks.
     const itemConnectionNames = this.connectionNameSets[itemIndex]!;
+    const isSameNet = canonicalConnectionNames.some((name) =>
+      itemConnectionNames.has(name),
+    );
     if (
-      canonicalConnectionNames.some((name) => itemConnectionNames.has(name))
+      isSameNet &&
+      !(
+        query.blockSameNetObstacles &&
+        item.kind === "obstacle" &&
+        item.obstacleKind !== "via"
+      )
     ) {
       return false;
     }
@@ -376,6 +405,15 @@ export class SpatialObstacleIndex {
     ) {
       return false;
     }
+    const itemClearance =
+      item.kind === "obstacle" && item.obstacleKind === "pad"
+        ? isSameNet && query.blockSameNetObstacles
+          ? (query.sameNetObstacleClearance ??
+            query.obstacleClearance ??
+            this.clearance)
+          : (query.obstacleClearance ?? this.clearance)
+        : this.clearance;
+    const itemRadius = query.width / 2 + itemClearance;
     if (item.exactShape?.type === "segment") {
       return (
         distanceSegmentToSegment(
@@ -384,7 +422,7 @@ export class SpatialObstacleIndex {
           item.exactShape.start,
           item.exactShape.end,
         ) <=
-        radius + item.exactShape.width / 2 + 1e-9
+        itemRadius + item.exactShape.width / 2 + 1e-9
       );
     }
     if (item.exactShape?.type === "polygon") {
@@ -394,7 +432,7 @@ export class SpatialObstacleIndex {
           query.end,
           item.exactShape.points,
         ) <=
-        radius + 1e-9
+        itemRadius + 1e-9
       );
     }
     if (item.exactShape?.type === "circle") {
@@ -404,14 +442,14 @@ export class SpatialObstacleIndex {
           query.start,
           query.end,
         ) <=
-        radius + item.exactShape.radius + 1e-9
+        itemRadius + item.exactShape.radius + 1e-9
       );
     }
     return segmentIntersectsRect(query.start, query.end, {
-      minX: item.minX - radius,
-      minY: item.minY - radius,
-      maxX: item.maxX + radius,
-      maxY: item.maxY + radius,
+      minX: item.minX - itemRadius,
+      minY: item.minY - itemRadius,
+      maxX: item.maxX + itemRadius,
+      maxY: item.maxY + itemRadius,
     });
   }
 

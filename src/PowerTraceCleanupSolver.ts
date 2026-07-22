@@ -19,18 +19,21 @@ import type {
   Point,
   PowerTraceCleanupOutput,
   PowerTraceCleanupProblem,
+  ViaRoutePoint,
   WireRoutePoint,
 } from "./types";
 
 type CleanupPhase =
+  | "repair-vias"
   | "scan-via-pairs"
+  | "scan-pad-clearance"
   | "scan-simplification"
   | "evaluate-candidate"
   | "shove-clearance"
   | "route-via-pair"
   | "complete";
 
-type CleanupKind = "via-pair" | "simplification";
+type CleanupKind = "via-pair" | "pad-clearance" | "simplification";
 
 type RouteQuality = {
   length: number;
@@ -50,14 +53,17 @@ type CleanupCandidate = {
   layer: string;
   points: Point[];
   width: number;
+  padClearance: number;
   originalQuality: RouteQuality;
 };
 
 type ViaGridAttempt = {
+  kind: CleanupKind;
   traceIndex: number;
   startIndex: number;
   endIndex: number;
   layer: string;
+  padClearance: number;
   originalQuality: RouteQuality;
   widths: number[];
   widthCursor: number;
@@ -75,6 +81,15 @@ const isWire = (
   point: SimplifiedPcbTrace["route"][number] | undefined,
 ): point is WireRoutePoint => point?.route_type === "wire";
 
+const isVia = (
+  point: SimplifiedPcbTrace["route"][number] | undefined,
+): point is ViaRoutePoint => point?.route_type === "via";
+
+const VIA_REPAIR_DIRECTIONS = Array.from({ length: 24 }, (_, index) => {
+  const angle = (index * Math.PI) / 12;
+  return { x: Math.cos(angle), y: Math.sin(angle) };
+});
+
 const uniqueDescending = (values: number[]) =>
   [...new Set(values.map((value) => Number(value.toFixed(6))))].sort(
     (a, b) => b - a,
@@ -91,7 +106,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   readonly inputProblem: PowerTraceCleanupProblem;
   traces: SimplifiedPcbTrace[];
   obstacleIndex: SpatialObstacleIndex;
-  phase: CleanupPhase = "scan-via-pairs";
+  phase: CleanupPhase = "repair-vias";
 
   traceCursor = 0;
   routeCursor = 0;
@@ -106,11 +121,18 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   simplifiedPathCount = 0;
   normalizedSegmentCount = 0;
   achievedExtraClearanceCount = 0;
+  relocatedViaCount = 0;
+  unresolvedViaCount = 0;
+  padClearanceRerouteCount = 0;
+  unresolvedPadClearanceCount = 0;
+  initialPadClearanceViolationCount = 0;
+  remainingPadClearanceViolationCount = 0;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly traceIndices: number[];
   private readonly maxRerouteLength: number;
   private readonly clearancePaddingTiers: number[];
+  private readonly desiredPadClearance: number;
   private readonly initialTraceLengths = new Map<number, number>();
   private candidates: CleanupCandidate[] = [];
   private candidateShoveCount = 0;
@@ -138,6 +160,11 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.traces,
     );
     this.maxRerouteLength = inputProblem.maxRerouteLength ?? 10;
+    this.desiredPadClearance = Math.max(
+      inputProblem.desiredPadClearance ?? 0.2,
+      inputProblem.simpleRouteJson.minTraceToPadEdgeClearance ?? 0,
+      0.1,
+    );
     this.clearancePaddingTiers = uniqueDescending([
       ...(inputProblem.clearancePaddingTiers ?? [0.1, 0.05, 0]),
       0,
@@ -158,6 +185,9 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       );
     }
     this.obstacleIndex = this.createObstacleIndex();
+    this.initialPadClearanceViolationCount = this.countPadClearanceViolations();
+    this.remainingPadClearanceViolationCount =
+      this.initialPadClearanceViolationCount;
     this.activeSubSolver = null;
     this.MAX_ITERATIONS = 1_000_000;
     this.stats = this.createStats();
@@ -175,8 +205,14 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     }
 
     switch (this.phase) {
+      case "repair-vias":
+        this.repairNextVia();
+        break;
       case "scan-via-pairs":
         this.scanNextViaPair();
+        break;
+      case "scan-pad-clearance":
+        this.scanNextPadClearance();
         break;
       case "scan-simplification":
         this.scanNextSimplification();
@@ -197,12 +233,200 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     this.stats = this.createStats();
   }
 
+  private repairNextVia() {
+    const trace = this.traces[this.traceCursor];
+    if (!trace) {
+      this.traceCursor = 0;
+      this.routeCursor = 0;
+      this.phase = "scan-via-pairs";
+      this.rebuildObstacleIndex();
+      return;
+    }
+    const viaIndex = trace.route.findIndex(
+      (point, index) => index >= this.routeCursor && isVia(point),
+    );
+    if (viaIndex === -1) {
+      this.traceCursor++;
+      this.routeCursor = 0;
+      return;
+    }
+    this.routeCursor = viaIndex + 1;
+    const via = trace.route[viaIndex];
+    const leftWire = trace.route[viaIndex - 1];
+    const rightWire = trace.route[viaIndex + 1];
+    if (!isVia(via) || !isWire(leftWire) || !isWire(rightWire)) return;
+
+    const connectionNames = this.getTraceConnectionNames(trace);
+    // Via repair is a DFM pass, not a power-clearance pass: vias must clear
+    // unrelated copper by the board minimum and must never overlap connected
+    // pads. Applying the larger power-to-pad target to the via annulus creates
+    // unnecessarily long necks in otherwise healthy power routes.
+    const padClearance = this.getBaseObstacleClearance();
+    if (
+      !this.obstacleIndex.collidesVia({
+        point: via,
+        layers: this.obstacleIndex.boardLayers,
+        padDiameter: via.via_diameter ?? 0.6,
+        holeDiameter:
+          via.via_hole_diameter ?? this.obstacleIndex.defaultViaHoleDiameter,
+        connectionNames,
+        ignoreTraceIndex: this.traceCursor,
+        ignoreRouteRange: { start: viaIndex, end: viaIndex },
+        obstacleClearance: padClearance,
+        blockSameNetObstacles: true,
+        sameNetObstacleClearance: 0,
+      })
+    ) {
+      return;
+    }
+
+    const replacement = this.findViaRepair(trace, viaIndex, padClearance);
+    if (!replacement) {
+      this.unresolvedViaCount++;
+      return;
+    }
+    trace.route.splice(
+      replacement.startIndex,
+      replacement.endIndex - replacement.startIndex + 1,
+      ...replacement.route,
+    );
+    this.relocatedViaCount++;
+    this.routeCursor = replacement.startIndex + replacement.route.length;
+    this.rebuildObstacleIndex();
+  }
+
+  private findViaRepair(
+    trace: SimplifiedPcbTrace,
+    viaIndex: number,
+    padClearance: number,
+  ) {
+    const via = trace.route[viaIndex];
+    const leftWire = trace.route[viaIndex - 1];
+    const rightWire = trace.route[viaIndex + 1];
+    if (!isVia(via) || !isWire(leftWire) || !isWire(rightWire)) return null;
+
+    const leftIsEndpoint =
+      viaIndex - 1 === 0 || !isWire(trace.route[viaIndex - 2]);
+    const rightIsEndpoint =
+      viaIndex + 1 === trace.route.length - 1 ||
+      !isWire(trace.route[viaIndex + 2]);
+    const leftAnchor = leftIsEndpoint
+      ? leftWire
+      : (trace.route[viaIndex - 2] as WireRoutePoint);
+    const rightAnchor = rightIsEndpoint
+      ? rightWire
+      : (trace.route[viaIndex + 2] as WireRoutePoint);
+    const originalLength =
+      distance(leftAnchor, via) + distance(via, rightAnchor);
+    const connectionNames = this.getTraceConnectionNames(trace);
+    const viaDiameter = via.via_diameter ?? 0.6;
+    const holeDiameter =
+      via.via_hole_diameter ?? this.obstacleIndex.defaultViaHoleDiameter;
+    const minimumRadius = Math.max(
+      0.3,
+      holeDiameter +
+        this.obstacleIndex.minViaHoleEdgeToViaHoleEdgeClearance +
+        0.05,
+    );
+    const candidates = [
+      minimumRadius,
+      minimumRadius + 0.15,
+      minimumRadius + 0.3,
+      minimumRadius + 0.5,
+      minimumRadius + 0.75,
+      minimumRadius + 1,
+      minimumRadius + 1.5,
+      minimumRadius + 2,
+    ].flatMap((radius) =>
+      VIA_REPAIR_DIRECTIONS.map((direction) => ({
+        x: Math.round((via.x + direction.x * radius) / 0.025) * 0.025,
+        y: Math.round((via.y + direction.y * radius) / 0.025) * 0.025,
+      })),
+    );
+
+    const safeCandidates = candidates.flatMap((point) => {
+      const movedLength =
+        distance(leftAnchor, point) + distance(point, rightAnchor);
+      if (movedLength > originalLength + 3 + WIDTH_EPSILON) return [];
+      if (
+        this.obstacleIndex.collidesVia({
+          point,
+          layers: this.obstacleIndex.boardLayers,
+          padDiameter: viaDiameter,
+          holeDiameter,
+          connectionNames,
+          ignoreTraceIndex: this.traceCursor,
+          ignoreRouteRange: { start: viaIndex, end: viaIndex },
+          obstacleClearance: padClearance,
+          blockSameNetObstacles: true,
+          sameNetObstacleClearance: 0,
+        })
+      ) {
+        return [];
+      }
+      const ignoreRouteRange = {
+        start: Math.max(0, viaIndex - 2),
+        end: Math.min(trace.route.length - 1, viaIndex + 2),
+      };
+      const segmentChecks = [
+        {
+          start: leftAnchor,
+          end: point,
+          layer: leftWire.layer,
+          width: leftWire.width,
+        },
+        {
+          start: point,
+          end: rightAnchor,
+          layer: rightWire.layer,
+          width: rightWire.width,
+        },
+      ];
+      if (
+        segmentChecks.some((segment) =>
+          this.obstacleIndex.collides({
+            ...segment,
+            connectionNames,
+            ignoreTraceIndex: this.traceCursor,
+            ignoreRouteRange,
+            obstacleClearance: padClearance,
+          }),
+        )
+      ) {
+        return [];
+      }
+      return [{ point, movedLength }];
+    });
+    safeCandidates.sort(
+      (a, b) =>
+        a.movedLength - b.movedLength ||
+        distance(a.point, via) - distance(b.point, via),
+    );
+    const best = safeCandidates[0];
+    if (!best) return null;
+
+    const movedLeft: WireRoutePoint = { ...leftWire, ...best.point };
+    const movedVia: ViaRoutePoint = { ...via, ...best.point };
+    const movedRight: WireRoutePoint = { ...rightWire, ...best.point };
+    return {
+      startIndex: viaIndex - 1,
+      endIndex: viaIndex + 1,
+      route: [
+        ...(leftIsEndpoint ? [leftWire] : []),
+        movedLeft,
+        movedVia,
+        movedRight,
+        ...(rightIsEndpoint ? [rightWire] : []),
+      ],
+    };
+  }
+
   private scanNextViaPair() {
     const traceIndex = this.traceIndices[this.traceCursor];
     if (traceIndex === undefined) {
       this.traceCursor = 0;
       this.routeCursor = 0;
-      this.phase = "scan-simplification";
+      this.phase = "scan-pad-clearance";
       return;
     }
     const trace = this.traces[traceIndex]!;
@@ -245,9 +469,143 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     this.beginCandidates(candidates, "scan-via-pairs", true);
   }
 
+  private scanNextPadClearance() {
+    const traceIndex = this.traceIndices[this.traceCursor];
+    if (traceIndex === undefined) {
+      this.traceCursor = 0;
+      this.routeCursor = 0;
+      this.phase = "scan-simplification";
+      return;
+    }
+    const trace = this.traces[traceIndex]!;
+    if (this.resolveNominalTraceWidth(trace) < 0.5 - WIDTH_EPSILON) {
+      this.advanceTrace();
+      return;
+    }
+    const segmentIndex = this.routeCursor;
+    const start = trace.route[segmentIndex];
+    const end = trace.route[segmentIndex + 1];
+    if (!isWire(start) || !isWire(end) || start.layer !== end.layer) {
+      if (segmentIndex >= trace.route.length - 1) this.advanceTrace();
+      else this.routeCursor++;
+      return;
+    }
+    this.routeCursor++;
+    if (!this.segmentHasPadClearanceViolation(traceIndex, segmentIndex)) {
+      return;
+    }
+
+    const intervals = this.getPadClearanceIntervals(trace, segmentIndex);
+    const candidates = intervals.flatMap((interval) =>
+      this.createCandidates({
+        kind: "pad-clearance",
+        traceIndex,
+        startIndex: interval.startIndex,
+        endIndex: interval.endIndex,
+      }),
+    );
+    if (candidates.length === 0) {
+      this.unresolvedPadClearanceCount++;
+      return;
+    }
+    this.beginCandidates(candidates.slice(0, 48), "scan-pad-clearance", true);
+  }
+
+  private segmentHasPadClearanceViolation(
+    traceIndex: number,
+    segmentIndex: number,
+  ) {
+    const trace = this.traces[traceIndex]!;
+    const start = trace.route[segmentIndex];
+    const end = trace.route[segmentIndex + 1];
+    if (!isWire(start) || !isWire(end) || start.layer !== end.layer) {
+      return false;
+    }
+    return this.obstacleIndex
+      .findCollisions({
+        start,
+        end,
+        layer: start.layer,
+        width: Math.max(start.width, end.width),
+        connectionNames: this.getTraceConnectionNames(trace),
+        ignoreTraceIndex: traceIndex,
+        ignoreRouteRange: {
+          start: Math.max(0, segmentIndex - 1),
+          end: Math.min(trace.route.length - 1, segmentIndex + 2),
+        },
+        obstacleClearance: this.getPadClearanceForTrace(trace),
+      })
+      .some((item) => item.kind === "obstacle" && item.obstacleKind === "pad");
+  }
+
+  private getPadClearanceIntervals(
+    trace: SimplifiedPcbTrace,
+    segmentIndex: number,
+  ) {
+    const segmentStart = trace.route[segmentIndex];
+    if (!isWire(segmentStart)) return [];
+    const startIndices = [segmentIndex];
+    let accumulated = 0;
+    for (let index = segmentIndex - 1; index >= 0; index--) {
+      const start = trace.route[index];
+      const end = trace.route[index + 1];
+      if (
+        !isWire(start) ||
+        !isWire(end) ||
+        start.layer !== segmentStart.layer ||
+        end.layer !== segmentStart.layer
+      ) {
+        break;
+      }
+      accumulated += distance(start, end);
+      if (accumulated > this.maxRerouteLength / 2 + WIDTH_EPSILON) break;
+      startIndices.push(index);
+    }
+
+    const endIndices = [segmentIndex + 1];
+    accumulated = 0;
+    for (
+      let index = segmentIndex + 1;
+      index < trace.route.length - 1;
+      index++
+    ) {
+      const start = trace.route[index];
+      const end = trace.route[index + 1];
+      if (
+        !isWire(start) ||
+        !isWire(end) ||
+        start.layer !== segmentStart.layer ||
+        end.layer !== segmentStart.layer
+      ) {
+        break;
+      }
+      accumulated += distance(start, end);
+      if (accumulated > this.maxRerouteLength / 2 + WIDTH_EPSILON) break;
+      endIndices.push(index + 1);
+    }
+
+    return startIndices
+      .flatMap((startIndex) =>
+        endIndices.map((endIndex) => ({
+          startIndex,
+          endIndex,
+          length: this.measureRouteRange(trace, startIndex, endIndex).length,
+        })),
+      )
+      .filter(
+        (interval) =>
+          interval.length <= this.maxRerouteLength + WIDTH_EPSILON &&
+          interval.startIndex < interval.endIndex,
+      )
+      .sort((a, b) => b.length - a.length)
+      .slice(0, 8);
+  }
+
   private scanNextSimplification() {
     const traceIndex = this.traceIndices[this.traceCursor];
     if (traceIndex === undefined) {
+      this.remainingPadClearanceViolationCount =
+        this.countPadClearanceViolations();
       this.phase = "complete";
       return;
     }
@@ -319,12 +677,57 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     if (!isWire(start) || !isWire(end) || start.layer !== end.layer) return [];
     const nominalWidth = this.resolveNominalTraceWidth(trace);
     const originalQuality = this.measureRouteRange(trace, startIndex, endIndex);
+    const padClearance = this.getCandidatePadClearance(
+      kind,
+      traceIndex,
+      startIndex,
+      endIndex,
+    );
     const candidates: CleanupCandidate[] = [];
+    const pointCandidates = calculateOctilinearPaths(start, end);
+    if (
+      kind === "pad-clearance" &&
+      countNonOctilinearSegments([start, end]) === 0
+    ) {
+      const segmentLength = distance(start, end);
+      if (segmentLength > WIDTH_EPSILON) {
+        const normal = {
+          x: -(end.y - start.y) / segmentLength,
+          y: (end.x - start.x) / segmentLength,
+        };
+        for (const offset of [0.25, 0.5, 0.75, 1, 1.5, 2]) {
+          for (const direction of [-1, 1]) {
+            pointCandidates.push([
+              start,
+              {
+                x: start.x + normal.x * offset * direction,
+                y: start.y + normal.y * offset * direction,
+              },
+              {
+                x: end.x + normal.x * offset * direction,
+                y: end.y + normal.y * offset * direction,
+              },
+              end,
+            ]);
+          }
+        }
+      }
+    }
 
-    for (const points of calculateOctilinearPaths(start, end)) {
+    const uniquePointCandidates = new Map(
+      pointCandidates.map((points) => [
+        points
+          .map((point) => `${point.x.toFixed(6)},${point.y.toFixed(6)}`)
+          .join(";"),
+        points,
+      ]),
+    );
+    for (const points of uniquePointCandidates.values()) {
       const pathLength = getPathLength(points);
       if (
         pathLength > this.maxRerouteLength + WIDTH_EPSILON ||
+        (kind === "pad-clearance" &&
+          pathLength > originalQuality.length * 1.35 + 0.5) ||
         (kind === "simplification" &&
           (pathLength > originalQuality.length * 1.1 + WIDTH_EPSILON ||
             this.measureTraceLength(trace) -
@@ -399,6 +802,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
           layer: start.layer,
           points,
           width,
+          padClearance,
           originalQuality,
         });
       }
@@ -508,6 +912,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
             start: Math.max(0, candidate.startIndex - 1),
             end: Math.min(trace.route.length - 1, candidate.endIndex + 1),
           },
+          obstacleClearance: candidate.padClearance,
         })
       ) {
         return true;
@@ -536,6 +941,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
           start: Math.max(0, candidate.startIndex - 1),
           end: Math.min(trace.route.length - 1, candidate.endIndex + 1),
         },
+        obstacleClearance: candidate.padClearance,
       };
       if (!this.obstacleIndex.collides(query)) continue;
       const collisions = this.obstacleIndex.findCollisions(query);
@@ -703,6 +1109,10 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.viaPairCountRemoved++;
       this.viaCountRemoved += removedViaCount;
       this.routeCursor = Math.max(0, candidate.startIndex - 1);
+    } else if (candidate.kind === "pad-clearance") {
+      this.padClearanceRerouteCount++;
+      this.routeCursor =
+        candidate.startIndex + Math.max(1, replacement.length - 1);
     } else {
       this.simplifiedPathCount++;
       this.normalizedSegmentCount += removedNonOctilinearCount;
@@ -723,7 +1133,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     const gridFallbackCandidate = this.candidates[0];
     const gridFallbackWidths = uniqueDescending(
       this.candidates
-        .filter((candidate) => candidate.kind === "via-pair")
+        .filter((candidate) => candidate.kind === gridFallbackCandidate?.kind)
         .map((candidate) => candidate.width),
     );
     this.rollbackCandidateShoves();
@@ -735,7 +1145,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     if (
       !accepted &&
       this.candidateSetMayUseGridFallback &&
-      gridFallbackCandidate?.kind === "via-pair"
+      gridFallbackCandidate
     ) {
       this.candidateSetMayUseGridFallback = false;
       this.beginViaGridAttempt(gridFallbackCandidate, gridFallbackWidths);
@@ -748,10 +1158,12 @@ export class PowerTraceCleanupSolver extends BaseSolver {
 
   private beginViaGridAttempt(candidate: CleanupCandidate, widths: number[]) {
     this.viaGridAttempt = {
+      kind: candidate.kind,
       traceIndex: candidate.traceIndex,
       startIndex: candidate.startIndex,
       endIndex: candidate.endIndex,
       layer: candidate.layer,
+      padClearance: candidate.padClearance,
       originalQuality: candidate.originalQuality,
       widths,
       widthCursor: 0,
@@ -765,13 +1177,16 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private startNextViaGridCandidate() {
     const attempt = this.viaGridAttempt;
     if (!attempt) {
-      this.phase = "scan-via-pairs";
+      this.phase = this.resumePhase;
       return;
     }
     if (attempt.widthCursor >= attempt.widths.length) {
+      if (attempt.kind === "pad-clearance") {
+        this.unresolvedPadClearanceCount++;
+      }
       this.viaGridAttempt = null;
       this.routeCursor++;
-      this.phase = "scan-via-pairs";
+      this.phase = this.resumePhase;
       return;
     }
     const width = attempt.widths[attempt.widthCursor]!;
@@ -800,7 +1215,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     if (!isWire(start) || !isWire(end)) {
       this.viaGridAttempt = null;
       this.routeCursor++;
-      this.phase = "scan-via-pairs";
+      this.phase = this.resumePhase;
       return;
     }
     const gridSize = attempt.gridSizes[attempt.gridSizeCursor]!;
@@ -821,6 +1236,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         end: Math.min(trace.route.length - 1, attempt.endIndex + 1),
       },
       bounds: this.inputProblem.simpleRouteJson.bounds,
+      obstacleClearance: attempt.padClearance,
       searchPadding: Math.min(
         4,
         Math.max(2, distance(start, end) / 2, width * 3),
@@ -854,17 +1270,18 @@ export class PowerTraceCleanupSolver extends BaseSolver {
           this.preservesCoverage(quality, attempt.originalQuality)
         ) {
           const candidate: CleanupCandidate = {
-            kind: "via-pair",
+            kind: attempt.kind,
             traceIndex: attempt.traceIndex,
             startIndex: attempt.startIndex,
             endIndex: attempt.endIndex,
             layer: attempt.layer,
             points: output.points,
             width: output.traceWidth,
+            padClearance: attempt.padClearance,
             originalQuality: attempt.originalQuality,
           };
           this.viaGridAttempt = null;
-          this.beginCandidates([candidate], "scan-via-pairs", false);
+          this.beginCandidates([candidate], this.resumePhase, false);
           return;
         }
       }
@@ -1007,7 +1424,9 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     return new SpatialObstacleIndex(
       this.inputProblem.simpleRouteJson,
       this.traces,
-      this.traceIndices?.[this.traceCursor],
+      this.phase === "repair-vias"
+        ? undefined
+        : this.traceIndices?.[this.traceCursor],
       [],
       this.connectionNameResolver,
     );
@@ -1026,6 +1445,132 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         this.inputProblem.simpleRouteJson.minTraceWidth,
       this.inputProblem.simpleRouteJson.minTraceWidth,
     );
+  }
+
+  private getPadClearanceForTrace(trace: SimplifiedPcbTrace) {
+    const baseClearance = this.getBaseObstacleClearance();
+    return this.resolveNominalTraceWidth(trace) >= 0.5 - WIDTH_EPSILON
+      ? Math.max(baseClearance, this.desiredPadClearance)
+      : baseClearance;
+  }
+
+  private getBaseObstacleClearance() {
+    return Math.max(
+      this.inputProblem.simpleRouteJson.defaultObstacleMargin ?? 0,
+      this.inputProblem.simpleRouteJson.minTraceToPadEdgeClearance ?? 0,
+      0.1,
+    );
+  }
+
+  private getCandidatePadClearance(
+    kind: CleanupKind,
+    traceIndex: number,
+    startIndex: number,
+    endIndex: number,
+  ) {
+    const trace = this.traces[traceIndex]!;
+    const baseClearance = this.getBaseObstacleClearance();
+    const targetClearance = this.getPadClearanceForTrace(trace);
+    if (kind === "pad-clearance") return targetClearance;
+
+    // Do not trade away clearance that a route already has. For unavoidable
+    // package escapes, preserve the current 0.01 mm tier instead of requiring
+    // the global target and disabling useful via removal/path simplification.
+    const tierCount = Math.ceil((targetClearance - baseClearance) / 0.01);
+    for (let tierIndex = 0; tierIndex <= tierCount; tierIndex++) {
+      const clearance = Number((targetClearance - tierIndex * 0.01).toFixed(6));
+      if (clearance < baseClearance - WIDTH_EPSILON) break;
+      if (
+        !this.routeRangeHasPadClearanceViolation(
+          traceIndex,
+          startIndex,
+          endIndex,
+          clearance,
+        )
+      ) {
+        return clearance;
+      }
+    }
+    return baseClearance;
+  }
+
+  private routeRangeHasPadClearanceViolation(
+    traceIndex: number,
+    startIndex: number,
+    endIndex: number,
+    clearance: number,
+  ) {
+    const trace = this.traces[traceIndex]!;
+    const connectionNames = this.getTraceConnectionNames(trace);
+    for (let routeIndex = startIndex; routeIndex < endIndex; routeIndex++) {
+      const start = trace.route[routeIndex];
+      const end = trace.route[routeIndex + 1];
+      if (!isWire(start) || !isWire(end) || start.layer !== end.layer) {
+        continue;
+      }
+      const collisions = this.obstacleIndex.findCollisions({
+        start,
+        end,
+        layer: start.layer,
+        width: Math.max(start.width, end.width),
+        connectionNames,
+        ignoreTraceIndex: traceIndex,
+        ignoreRouteRange: {
+          start: Math.max(0, startIndex - 1),
+          end: Math.min(trace.route.length - 1, endIndex + 1),
+        },
+        obstacleClearance: clearance,
+      });
+      if (
+        collisions.some(
+          (item) => item.kind === "obstacle" && item.obstacleKind === "pad",
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private countPadClearanceViolations() {
+    let violationCount = 0;
+    for (const traceIndex of this.traceIndices) {
+      const trace = this.traces[traceIndex];
+      if (!trace) continue;
+      const connectionNames = this.getTraceConnectionNames(trace);
+      for (
+        let routeIndex = 0;
+        routeIndex < trace.route.length - 1;
+        routeIndex++
+      ) {
+        const start = trace.route[routeIndex];
+        const end = trace.route[routeIndex + 1];
+        if (!isWire(start) || !isWire(end) || start.layer !== end.layer) {
+          continue;
+        }
+        const collisions = this.obstacleIndex.findCollisions({
+          start,
+          end,
+          layer: start.layer,
+          width: Math.max(start.width, end.width),
+          connectionNames,
+          ignoreTraceIndex: traceIndex,
+          ignoreRouteRange: {
+            start: Math.max(0, routeIndex - 1),
+            end: Math.min(trace.route.length - 1, routeIndex + 2),
+          },
+          obstacleClearance: this.getPadClearanceForTrace(trace),
+        });
+        if (
+          collisions.some(
+            (item) => item.kind === "obstacle" && item.obstacleKind === "pad",
+          )
+        ) {
+          violationCount++;
+        }
+      }
+    }
+    return violationCount;
   }
 
   private findConnectionForTrace(trace: SimplifiedPcbTrace) {
@@ -1085,6 +1630,13 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       simplifiedPathCount: this.simplifiedPathCount,
       normalizedSegmentCount: this.normalizedSegmentCount,
       achievedExtraClearanceCount: this.achievedExtraClearanceCount,
+      relocatedViaCount: this.relocatedViaCount,
+      unresolvedViaCount: this.unresolvedViaCount,
+      padClearanceRerouteCount: this.padClearanceRerouteCount,
+      unresolvedPadClearanceCount: this.unresolvedPadClearanceCount,
+      initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
+      remainingPadClearanceViolationCount:
+        this.remainingPadClearanceViolationCount,
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }

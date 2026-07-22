@@ -5,6 +5,10 @@ import { cleanupCases } from "../fixtures/cleanup-cases";
 import { PowerTraceCleanupSolver, SpatialObstacleIndex } from "../src";
 import { countNonOctilinearSegments } from "../src/octilinear";
 
+const getRouteVias = (
+  route: (typeof cleanupCases.viaPairElimination.traces)[number]["route"],
+) => route.filter((point) => point.route_type === "via");
+
 test("removes a redundant same-layer via pair", async () => {
   const problem = structuredClone(cleanupCases.viaPairElimination);
   const solver = new PowerTraceCleanupSolver({
@@ -87,5 +91,99 @@ test("shoves a signal to add clearance before octilinear simplification", async 
   }
   await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
     svgName: "clearance-shove-simplification",
+  });
+});
+
+test("relocates a routed via out of a connected pad", async () => {
+  const problem = structuredClone(cleanupCases.routedViaInConnectedPad);
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+  });
+
+  solver.solve();
+
+  const output = solver.getOutput();
+  const routeVia = getRouteVias(output[0]!.route)[0]!;
+  const index = new SpatialObstacleIndex(problem, output, 0);
+  expect(solver.stats.relocatedViaCount).toBe(1);
+  expect(
+    index.collidesVia({
+      point: routeVia,
+      layers: index.boardLayers,
+      padDiameter: routeVia.via_diameter ?? 0.6,
+      holeDiameter: routeVia.via_hole_diameter ?? 0.3,
+      connectionNames: ["POWER"],
+      ignoreTraceIndex: 0,
+      ignoreRouteRange: { start: 1, end: 3 },
+      blockSameNetObstacles: true,
+      sameNetObstacleClearance: 0,
+    }),
+  ).toBe(false);
+  await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
+    svgName: "routed-via-in-connected-pad",
+  });
+});
+
+test("separates clustered same-net routed vias", async () => {
+  const problem = structuredClone(cleanupCases.clusteredSameNetVias);
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+  });
+
+  solver.solve();
+
+  const vias = solver.getOutput().flatMap((trace) => getRouteVias(trace.route));
+  expect(vias).toHaveLength(2);
+  expect(
+    Math.hypot(vias[0]!.x - vias[1]!.x, vias[0]!.y - vias[1]!.y),
+  ).toBeGreaterThanOrEqual(0.4 - 1e-9);
+  expect(solver.stats.relocatedViaCount).toBeGreaterThanOrEqual(1);
+  expect(solver.stats.unresolvedViaCount).toBe(0);
+  await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
+    svgName: "clustered-same-net-vias",
+  });
+});
+
+test("reroutes a power trace to its preferred pad clearance", async () => {
+  const problem = structuredClone(cleanupCases.powerTracePadClearance);
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+    desiredPadClearance: 0.25,
+  });
+
+  solver.solve();
+
+  const output = solver.getOutput();
+  const index = new SpatialObstacleIndex(problem, output, 0);
+  const route = output[0]!.route;
+  for (let routeIndex = 0; routeIndex < route.length - 1; routeIndex++) {
+    const start = route[routeIndex];
+    const end = route[routeIndex + 1];
+    if (
+      start?.route_type !== "wire" ||
+      end?.route_type !== "wire" ||
+      start.layer !== end.layer
+    ) {
+      continue;
+    }
+    expect(
+      index.collides({
+        start,
+        end,
+        layer: start.layer,
+        width: Math.max(start.width, end.width),
+        connectionNames: ["POWER"],
+        ignoreTraceIndex: 0,
+        obstacleClearance: 0.25,
+      }),
+    ).toBe(false);
+  }
+  expect(solver.stats.padClearanceRerouteCount).toBeGreaterThanOrEqual(1);
+  expect(solver.stats.unresolvedPadClearanceCount).toBe(0);
+  await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
+    svgName: "power-trace-pad-clearance",
   });
 });

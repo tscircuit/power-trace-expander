@@ -6,17 +6,20 @@ import { PowerTraceCleanupSolver } from "../src";
 export const PowerTraceCleanupDebugger = ({
   problem,
   animationSpeed = 30,
+  desiredPadClearance,
 }: {
   problem: SimpleRouteJson;
   animationSpeed?: number;
+  desiredPadClearance?: number;
 }) => {
   const solver = useMemo(
     () =>
       new PowerTraceCleanupSolver({
         simpleRouteJson: problem,
         traces: problem.traces ?? [],
+        desiredPadClearance,
       }),
-    [problem],
+    [problem, desiredPadClearance],
   );
 
   return (

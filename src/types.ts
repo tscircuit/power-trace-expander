@@ -19,6 +19,8 @@ export type PowerTraceExpanderInput = SimpleRouteJson;
 export type PowerTraceExpanderOptions = {
   /** Restrict the top-level scan while still allowing nearby traces to move. */
   onlyConnectionNames?: readonly string[];
+  /** Preferred edge clearance from power copper to unrelated pads. */
+  powerTraceToPadClearance?: number;
 };
 
 export type PowerTraceExpanderOutput = SimplifiedPcbTrace[];
@@ -30,6 +32,7 @@ export type PowerTraceCleanupProblem = {
   traceIndices?: readonly number[];
   maxRerouteLength?: number;
   clearancePaddingTiers?: readonly number[];
+  desiredPadClearance?: number;
 };
 
 export type PowerTraceCleanupOutput = SimplifiedPcbTrace[];
@@ -41,6 +44,7 @@ export type IndexedObstacle = {
   maxY: number;
   layers: string[];
   kind: "obstacle" | "trace" | "via";
+  obstacleKind?: "pad" | "via" | "other";
   connectionNames: string[];
   traceIndex?: number;
   routeStartIndex?: number;
@@ -61,6 +65,12 @@ export type CollisionQuery = {
   ignoreTraceIndex?: number;
   ignoreTraceIndices?: readonly number[];
   ignoreRouteRange?: { start: number; end: number };
+  /** Override trace-to-pad clearance without widening trace spacing. */
+  obstacleClearance?: number;
+  /** Prospective vias use this to stay out of connected pads as a DFM rule. */
+  blockSameNetObstacles?: boolean;
+  /** Optional mechanical spacing for connected pads when they are blocked. */
+  sameNetObstacleClearance?: number;
 };
 
 export type ViaCollisionQuery = {
@@ -71,6 +81,10 @@ export type ViaCollisionQuery = {
   connectionNames: string[];
   ignoreTraceIndex?: number;
   ignoreTraceIndices?: readonly number[];
+  ignoreRouteRange?: { start: number; end: number };
+  obstacleClearance?: number;
+  blockSameNetObstacles?: boolean;
+  sameNetObstacleClearance?: number;
   otherNewViaPoints?: Point[];
   fixedVias?: Array<{
     point: Point;
@@ -136,6 +150,7 @@ export type GridRouteProblem = {
   searchPadding: number;
   /** Keep the reconstructed route on 0/45/90-degree headings. */
   requireOctilinear?: boolean;
+  obstacleClearance?: number;
 };
 
 export type GridRouteOutput = {
@@ -174,6 +189,7 @@ export type LayerGridRouteProblem = {
   fixedVias: NonNullable<ViaCollisionQuery["fixedVias"]>;
   bounds: SimpleRouteJson["bounds"];
   searchPadding: number;
+  obstacleClearance?: number;
 };
 
 export type LayerGridRouteOutput = {

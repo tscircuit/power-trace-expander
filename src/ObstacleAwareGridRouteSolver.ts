@@ -193,6 +193,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
       connectionNames: this.problem.connectionNames,
       ignoreTraceIndex: this.problem.ignoreTraceIndex,
       ignoreRouteRange: this.problem.ignoreRouteRange,
+      obstacleClearance: this.problem.obstacleClearance,
     });
   }
 
@@ -273,6 +274,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
       connectionNames: this.problem.connectionNames,
       ignoreTraceIndex: this.problem.ignoreTraceIndex,
       ignoreRouteRange: this.problem.ignoreRouteRange,
+      obstacleClearance: this.problem.obstacleClearance,
     });
   }
 

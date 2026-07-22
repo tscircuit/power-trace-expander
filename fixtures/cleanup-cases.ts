@@ -137,4 +137,103 @@ export const cleanupCases = {
       },
     ],
   },
+
+  routedViaInConnectedPad: {
+    ...baseProblem,
+    defaultObstacleMargin: 0.1,
+    minTraceToPadEdgeClearance: 0.1,
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 0.8,
+        pointsToConnect: [
+          { x: -4, y: 0, layer: "top" },
+          { x: 4, y: 0, layer: "bottom" },
+        ],
+      },
+    ],
+    obstacles: [
+      {
+        type: "rect",
+        obstacleId: "pcb_smtpad_connected",
+        center: { x: 0, y: 0 },
+        width: 1,
+        height: 1,
+        layers: ["top"],
+        connectedTo: ["pcb_smtpad_connected", "POWER"],
+      },
+    ],
+    traces: [
+      powerTrace([
+        wire(-4, 0, 0.8),
+        wire(0, 0, 0.8),
+        via(0, 0),
+        wire(0, 0, 0.8, "bottom"),
+        wire(4, 0, 0.8, "bottom"),
+      ]),
+    ],
+  },
+
+  clusteredSameNetVias: {
+    ...baseProblem,
+    defaultObstacleMargin: 0.1,
+    minTraceToPadEdgeClearance: 0.1,
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 0.8,
+        pointsToConnect: [
+          { x: -4, y: -0.4, layer: "top" },
+          { x: 4, y: -0.4, layer: "bottom" },
+        ],
+      },
+    ],
+    traces: [
+      powerTrace([
+        wire(-4, -0.4, 0.8),
+        wire(0, -0.4, 0.8),
+        via(0, -0.4),
+        wire(0, -0.4, 0.8, "bottom"),
+        wire(4, -0.4, 0.8, "bottom"),
+      ]),
+      {
+        ...powerTrace([
+          wire(-4, 0.4, 0.8),
+          wire(0.05, -0.4, 0.8),
+          via(0.05, -0.4),
+          wire(0.05, -0.4, 0.8, "bottom"),
+          wire(4, 0.4, 0.8, "bottom"),
+        ]),
+        pcb_trace_id: "power-trace-2",
+      },
+    ],
+  },
+
+  powerTracePadClearance: {
+    ...baseProblem,
+    defaultObstacleMargin: 0.1,
+    minTraceToPadEdgeClearance: 0.1,
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 0.8,
+        pointsToConnect: [
+          { x: -4, y: 0, layer: "top" },
+          { x: 4, y: 0, layer: "top" },
+        ],
+      },
+    ],
+    obstacles: [
+      {
+        type: "rect",
+        obstacleId: "pcb_smtpad_unrelated",
+        center: { x: 0, y: 0.8 },
+        width: 1.2,
+        height: 0.6,
+        layers: ["top"],
+        connectedTo: ["pcb_smtpad_unrelated", "SIGNAL"],
+      },
+    ],
+    traces: [powerTrace([wire(-4, 0, 0.8), wire(4, 0, 0.8)])],
+  },
 } satisfies Record<string, SimpleRouteJson>;

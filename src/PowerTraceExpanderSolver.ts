@@ -128,6 +128,12 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   simplifiedPathCount = 0;
   normalizedSegmentCount = 0;
   cleanupClearanceShoveCount = 0;
+  relocatedViaCount = 0;
+  unresolvedViaCount = 0;
+  padClearanceRerouteCount = 0;
+  unresolvedPadClearanceCount = 0;
+  initialPadClearanceViolationCount = 0;
+  remainingPadClearanceViolationCount = 0;
 
   private readonly inflationAttemptsBySegment = new Map<string, number>();
   private readonly layerAttemptCountByTrace = new Map<number, number>();
@@ -309,6 +315,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       traces: this.traces,
       traceIndices: this.traceOrder,
       maxRerouteLength: 10,
+      desiredPadClearance: this.getDesiredPadClearance(1),
     });
   }
 
@@ -687,6 +694,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       softTraceIndices: attempt.softTraceIndices,
       fixedVias: this.getFixedViasOutsideInterval(trace, attempt.interval),
       bounds: this.inputProblem.bounds,
+      obstacleClearance: this.getDesiredPadClearance(candidateWidth),
       searchPadding: Math.min(
         5,
         Math.max(2.5, distance(start, end) / 2, candidateWidth * 4),
@@ -782,6 +790,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         end: Math.min(trace.route.length - 1, interval.endIndex + 1),
       },
       bounds: this.inputProblem.bounds,
+      obstacleClearance: this.getDesiredPadClearance(candidateWidth),
       searchPadding: Math.min(
         5,
         Math.max(1.5, distance(start, end) / 2, candidateWidth * 3),
@@ -806,6 +815,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         start: Math.max(0, interval.startIndex - 1),
         end: Math.min(trace.route.length - 1, interval.endIndex + 1),
       },
+      obstacleClearance: this.getDesiredPadClearance(width),
     });
   }
 
@@ -859,6 +869,20 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.normalizedSegmentCount = Number(stats.normalizedSegmentCount ?? 0);
       this.cleanupClearanceShoveCount = Number(
         stats.committedClearanceShoveCount ?? 0,
+      );
+      this.relocatedViaCount = Number(stats.relocatedViaCount ?? 0);
+      this.unresolvedViaCount = Number(stats.unresolvedViaCount ?? 0);
+      this.padClearanceRerouteCount = Number(
+        stats.padClearanceRerouteCount ?? 0,
+      );
+      this.unresolvedPadClearanceCount = Number(
+        stats.unresolvedPadClearanceCount ?? 0,
+      );
+      this.initialPadClearanceViolationCount = Number(
+        stats.initialPadClearanceViolationCount ?? 0,
+      );
+      this.remainingPadClearanceViolationCount = Number(
+        stats.remainingPadClearanceViolationCount ?? 0,
       );
       this.activeSubSolver = null;
       this.phase = "complete";
@@ -942,6 +966,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
               )
               .map((candidate) => ({ x: candidate.x, y: candidate.y })),
             fixedVias,
+            ignoreRouteRange,
+            obstacleClearance: this.getDesiredPadClearance(output.traceWidth),
+            blockSameNetObstacles: true,
+            sameNetObstacleClearance: 0,
           })
         ) {
           return true;
@@ -967,6 +995,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
           ignoreTraceIndex: this.traceIndex,
           ignoreTraceIndices,
           ignoreRouteRange,
+          obstacleClearance: this.getDesiredPadClearance(output.traceWidth),
         })
       ) {
         return true;
@@ -1051,6 +1080,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
               attempt.interval.endIndex + 1,
             ),
           },
+          obstacleClearance: this.getDesiredPadClearance(output.traceWidth),
         })
       ) {
         return true;
@@ -1275,6 +1305,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
           start: firstAffectedSegment,
           end: lastAffectedSegment + 1,
         },
+        obstacleClearance: this.getDesiredPadClearance(targetWidth),
       };
       const collisions = this.obstacleIndex.findCollisions(query);
       if (collisions.length === 0 && this.obstacleIndex.collides(query)) {
@@ -1517,6 +1548,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
             start: Math.max(0, interval.startIndex - 1),
             end: Math.min(trace.route.length - 1, interval.endIndex + 1),
           },
+          obstacleClearance: this.getDesiredPadClearance(proposedWidth),
         })
       ) {
         return true;
@@ -1557,6 +1589,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
             start: boundary.startIndex,
             end: boundary.endIndex,
           },
+          obstacleClearance: this.getDesiredPadClearance(
+            Math.max(start.width, end.width, output.traceWidth),
+          ),
         })
       ) {
         return true;
@@ -1614,6 +1649,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
             start: firstAffectedSegment,
             end: lastAffectedSegment + 1,
           },
+          obstacleClearance: this.getDesiredPadClearance(proposedWidth),
         })
       ) {
         return false;
@@ -1867,6 +1903,23 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     );
   }
 
+  private getDesiredPadClearance(nominalWidth = this.nominalTraceWidth) {
+    const baseClearance = Math.max(
+      this.inputProblem.defaultObstacleMargin ?? 0,
+      this.inputProblem.minTraceToPadEdgeClearance ?? 0,
+      0.1,
+    );
+    if (nominalWidth < 0.5 - WIDTH_EPSILON) return baseClearance;
+    // Width recovery gets first choice of the existing corridor. The cleanup
+    // phase then reroutes full-width copper away from pads transactionally,
+    // avoiding an early clearance constraint that would preserve long necks.
+    if (this.phase !== "cleanup") return baseClearance;
+    return Math.max(
+      baseClearance,
+      this.options.powerTraceToPadClearance ?? 0.15,
+    );
+  }
+
   private findConnectionForTrace(trace: SimplifiedPcbTrace) {
     const traceNames = this.getTraceConnectionNames(trace);
     return this.inputProblem.connections.find((candidate) =>
@@ -1979,6 +2032,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       simplifiedPathCount: this.simplifiedPathCount,
       normalizedSegmentCount: this.normalizedSegmentCount,
       cleanupClearanceShoveCount: this.cleanupClearanceShoveCount,
+      relocatedViaCount: this.relocatedViaCount,
+      unresolvedViaCount: this.unresolvedViaCount,
+      padClearanceRerouteCount: this.padClearanceRerouteCount,
+      unresolvedPadClearanceCount: this.unresolvedPadClearanceCount,
+      initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
+      remainingPadClearanceViolationCount:
+        this.remainingPadClearanceViolationCount,
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }

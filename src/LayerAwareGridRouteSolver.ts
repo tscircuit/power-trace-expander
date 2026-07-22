@@ -321,6 +321,10 @@ export class LayerAwareGridRouteSolver extends BaseSolver {
           connectionNames: this.problem.connectionNames,
           ignoreTraceIndex: this.problem.ignoreTraceIndex,
           ignoreTraceIndices: this.problem.softTraceIndices,
+          ignoreRouteRange: this.problem.ignoreRouteRange,
+          obstacleClearance: this.problem.obstacleClearance,
+          blockSameNetObstacles: true,
+          sameNetObstacleClearance: 0,
           otherNewViaPoints: node.viaPoints,
           fixedVias: this.problem.fixedVias,
         })
@@ -415,6 +419,7 @@ export class LayerAwareGridRouteSolver extends BaseSolver {
         ignoreTraceIndex: this.problem.ignoreTraceIndex,
         ignoreTraceIndices: this.problem.softTraceIndices,
         ignoreRouteRange: this.problem.ignoreRouteRange,
+        obstacleClearance: this.problem.obstacleClearance,
       });
     let safeWidth = 0;
     if (!inStartNeck && !inEndNeck) {

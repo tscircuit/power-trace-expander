@@ -52,11 +52,13 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
   expect(before.nominalCoverage).toBe(0);
-  expect(after.nominalCoverage).toBeGreaterThan(0.99);
-  expect(after.averageWidth).toBeGreaterThan(0.995);
-  expect(after.normalizedWidthDeficit).toBeLessThan(0.005);
+  // Keeping the layer-change via out of the terminal pad requires a short
+  // neck from the pad edge. Nearly all of the route remains nominal-width.
+  expect(after.nominalCoverage).toBeGreaterThan(0.97);
+  expect(after.averageWidth).toBeGreaterThan(0.99);
+  expect(after.normalizedWidthDeficit).toBeLessThan(0.01);
   expect(after.coverageByFraction[0.5]).toBe(1);
-  expect(after.totalLength / before.totalLength).toBeLessThan(1.25);
+  expect(after.totalLength / before.totalLength).toBeLessThan(1.3);
   expect(bottomLength).toBeGreaterThan(10);
   expect(
     targetTrace.route.filter((point) => point.route_type === "via"),
@@ -85,6 +87,8 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
             obstacleIndex.defaultViaHoleDiameter,
           connectionNames,
           otherNewViaPoints: priorViaPoints,
+          blockSameNetObstacles: true,
+          sameNetObstacleClearance: 0,
         }),
       ).toBe(false);
       priorViaPoints.push({ x: routePoint.x, y: routePoint.y });
