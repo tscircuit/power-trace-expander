@@ -53,5 +53,7 @@ bun run solver:debug
 
 The Cosmos debugger uses `GenericSolverDebugger` from
 `@tscircuit/solver-utils`; scans, width checks, candidate setup, and individual
-A* expansions can all be stepped independently. The default fixture shows the
-localized trace-inflation case.
+A* expansions can all be stepped independently. The deployed catalog groups
+straight widening, central and rotated obstacles, and local trace inflation
+under **Simple**, with a narrow-channel retreat and the full RP2040 Dual Motor
+SRJ under **Complex**.
