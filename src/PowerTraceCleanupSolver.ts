@@ -63,7 +63,8 @@ type ViaGridAttempt = {
   startIndex: number;
   endIndex: number;
   layer: string;
-  padClearance: number;
+  padClearances: number[];
+  padClearanceCursor: number;
   originalQuality: RouteQuality;
   widths: number[];
   widthCursor: number;
@@ -76,6 +77,8 @@ const GRID_OFFSETS = [
   { x: 0, y: 0 },
   { x: 0.5, y: 0.5 },
 ] as const;
+
+const PAD_CLEARANCE_MEASUREMENT_TIERS = [0.15, 0.2, 0.25, 0.3, 0.4, 0.5];
 
 const isWire = (
   point: SimplifiedPcbTrace["route"][number] | undefined,
@@ -127,12 +130,14 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   unresolvedPadClearanceCount = 0;
   initialPadClearanceViolationCount = 0;
   remainingPadClearanceViolationCount = 0;
+  initialPadClearanceViolationCountByClearance: Record<string, number> = {};
+  remainingPadClearanceViolationCountByClearance: Record<string, number> = {};
 
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly traceIndices: number[];
   private readonly maxRerouteLength: number;
   private readonly clearancePaddingTiers: number[];
-  private readonly desiredPadClearance: number;
+  private readonly desiredPadClearance?: number;
   private readonly initialTraceLengths = new Map<number, number>();
   private candidates: CleanupCandidate[] = [];
   private candidateShoveCount = 0;
@@ -160,11 +165,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.traces,
     );
     this.maxRerouteLength = inputProblem.maxRerouteLength ?? 10;
-    this.desiredPadClearance = Math.max(
-      inputProblem.desiredPadClearance ?? 0.2,
-      inputProblem.simpleRouteJson.minTraceToPadEdgeClearance ?? 0,
-      0.1,
-    );
+    this.desiredPadClearance = inputProblem.desiredPadClearance;
     this.clearancePaddingTiers = uniqueDescending([
       ...(inputProblem.clearancePaddingTiers ?? [0.1, 0.05, 0]),
       0,
@@ -188,6 +189,11 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     this.initialPadClearanceViolationCount = this.countPadClearanceViolations();
     this.remainingPadClearanceViolationCount =
       this.initialPadClearanceViolationCount;
+    this.initialPadClearanceViolationCountByClearance =
+      this.countPadClearanceViolationsByTier();
+    this.remainingPadClearanceViolationCountByClearance = {
+      ...this.initialPadClearanceViolationCountByClearance,
+    };
     this.activeSubSolver = null;
     this.MAX_ITERATIONS = 1_000_000;
     this.stats = this.createStats();
@@ -496,19 +502,27 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     }
 
     const intervals = this.getPadClearanceIntervals(trace, segmentIndex);
-    const candidates = intervals.flatMap((interval) =>
-      this.createCandidates({
-        kind: "pad-clearance",
+    const candidates = intervals.flatMap((interval) => {
+      const padClearances = this.getImprovedPadClearanceTiers(
         traceIndex,
-        startIndex: interval.startIndex,
-        endIndex: interval.endIndex,
-      }),
-    );
+        interval.startIndex,
+        interval.endIndex,
+      );
+      return padClearances.flatMap((padClearance) =>
+        this.createCandidates({
+          kind: "pad-clearance",
+          traceIndex,
+          startIndex: interval.startIndex,
+          endIndex: interval.endIndex,
+          padClearance,
+        }).slice(0, 8),
+      );
+    });
     if (candidates.length === 0) {
       this.unresolvedPadClearanceCount++;
       return;
     }
-    this.beginCandidates(candidates.slice(0, 48), "scan-pad-clearance", true);
+    this.beginCandidates(candidates.slice(0, 72), "scan-pad-clearance", true);
   }
 
   private segmentHasPadClearanceViolation(
@@ -606,6 +620,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     if (traceIndex === undefined) {
       this.remainingPadClearanceViolationCount =
         this.countPadClearanceViolations();
+      this.remainingPadClearanceViolationCountByClearance =
+        this.countPadClearanceViolationsByTier();
       this.phase = "complete";
       return;
     }
@@ -665,11 +681,13 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     traceIndex,
     startIndex,
     endIndex,
+    padClearance: requestedPadClearance,
   }: {
     kind: CleanupKind;
     traceIndex: number;
     startIndex: number;
     endIndex: number;
+    padClearance?: number;
   }) {
     const trace = this.traces[traceIndex]!;
     const start = trace.route[startIndex];
@@ -677,12 +695,9 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     if (!isWire(start) || !isWire(end) || start.layer !== end.layer) return [];
     const nominalWidth = this.resolveNominalTraceWidth(trace);
     const originalQuality = this.measureRouteRange(trace, startIndex, endIndex);
-    const padClearance = this.getCandidatePadClearance(
-      kind,
-      traceIndex,
-      startIndex,
-      endIndex,
-    );
+    const padClearance =
+      requestedPadClearance ??
+      this.getCandidatePadClearance(kind, traceIndex, startIndex, endIndex);
     const candidates: CleanupCandidate[] = [];
     const pointCandidates = calculateOctilinearPaths(start, end);
     if (
@@ -1136,6 +1151,17 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         .filter((candidate) => candidate.kind === gridFallbackCandidate?.kind)
         .map((candidate) => candidate.width),
     );
+    const gridFallbackPadClearances = uniqueDescending(
+      this.candidates
+        .filter(
+          (candidate) =>
+            candidate.kind === gridFallbackCandidate?.kind &&
+            candidate.traceIndex === gridFallbackCandidate.traceIndex &&
+            candidate.startIndex === gridFallbackCandidate.startIndex &&
+            candidate.endIndex === gridFallbackCandidate.endIndex,
+        )
+        .map((candidate) => candidate.padClearance),
+    );
     this.rollbackCandidateShoves();
     this.candidates = [];
     this.candidateCursor = 0;
@@ -1148,7 +1174,11 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       gridFallbackCandidate
     ) {
       this.candidateSetMayUseGridFallback = false;
-      this.beginViaGridAttempt(gridFallbackCandidate, gridFallbackWidths);
+      this.beginViaGridAttempt(
+        gridFallbackCandidate,
+        gridFallbackWidths,
+        gridFallbackPadClearances,
+      );
       return;
     }
     this.candidateSetMayUseGridFallback = false;
@@ -1156,14 +1186,19 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     this.phase = this.resumePhase;
   }
 
-  private beginViaGridAttempt(candidate: CleanupCandidate, widths: number[]) {
+  private beginViaGridAttempt(
+    candidate: CleanupCandidate,
+    widths: number[],
+    padClearances = [candidate.padClearance],
+  ) {
     this.viaGridAttempt = {
       kind: candidate.kind,
       traceIndex: candidate.traceIndex,
       startIndex: candidate.startIndex,
       endIndex: candidate.endIndex,
       layer: candidate.layer,
-      padClearance: candidate.padClearance,
+      padClearances,
+      padClearanceCursor: 0,
       originalQuality: candidate.originalQuality,
       widths,
       widthCursor: 0,
@@ -1180,7 +1215,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.phase = this.resumePhase;
       return;
     }
-    if (attempt.widthCursor >= attempt.widths.length) {
+    if (attempt.padClearanceCursor >= attempt.padClearances.length) {
       if (attempt.kind === "pad-clearance") {
         this.unresolvedPadClearanceCount++;
       }
@@ -1189,7 +1224,16 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.phase = this.resumePhase;
       return;
     }
+    if (attempt.widthCursor >= attempt.widths.length) {
+      attempt.padClearanceCursor++;
+      attempt.widthCursor = 0;
+      attempt.gridSizes = [];
+      attempt.gridSizeCursor = 0;
+      attempt.offsetCursor = 0;
+      return;
+    }
     const width = attempt.widths[attempt.widthCursor]!;
+    const padClearance = attempt.padClearances[attempt.padClearanceCursor]!;
     if (attempt.gridSizes.length === 0) {
       attempt.gridSizes = uniqueDescending([
         clamp(width / 2, 0.2, 0.4),
@@ -1236,7 +1280,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         end: Math.min(trace.route.length - 1, attempt.endIndex + 1),
       },
       bounds: this.inputProblem.simpleRouteJson.bounds,
-      obstacleClearance: attempt.padClearance,
+      obstacleClearance: padClearance,
       searchPadding: Math.min(
         4,
         Math.max(2, distance(start, end) / 2, width * 3),
@@ -1277,7 +1321,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
             layer: attempt.layer,
             points: output.points,
             width: output.traceWidth,
-            padClearance: attempt.padClearance,
+            padClearance: attempt.padClearances[attempt.padClearanceCursor]!,
             originalQuality: attempt.originalQuality,
           };
           this.viaGridAttempt = null;
@@ -1450,7 +1494,10 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private getPadClearanceForTrace(trace: SimplifiedPcbTrace) {
     const baseClearance = this.getBaseObstacleClearance();
     return this.resolveNominalTraceWidth(trace) >= 0.5 - WIDTH_EPSILON
-      ? Math.max(baseClearance, this.desiredPadClearance)
+      ? Math.max(
+          baseClearance,
+          this.desiredPadClearance ?? this.resolveNominalTraceWidth(trace) / 2,
+        )
       : baseClearance;
   }
 
@@ -1474,24 +1521,92 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     if (kind === "pad-clearance") return targetClearance;
 
     // Do not trade away clearance that a route already has. For unavoidable
-    // package escapes, preserve the current 0.01 mm tier instead of requiring
-    // the global target and disabling useful via removal/path simplification.
-    const tierCount = Math.ceil((targetClearance - baseClearance) / 0.01);
-    for (let tierIndex = 0; tierIndex <= tierCount; tierIndex++) {
-      const clearance = Number((targetClearance - tierIndex * 0.01).toFixed(6));
-      if (clearance < baseClearance - WIDTH_EPSILON) break;
+    // package escapes, preserve the clearance the preceding pass achieved.
+    // A short binary search avoids dozens of indexed collision queries when
+    // the target is half of a 1 mm power trace.
+    return this.findExistingPadClearance(
+      traceIndex,
+      startIndex,
+      endIndex,
+      baseClearance,
+      targetClearance,
+    );
+  }
+
+  private getImprovedPadClearanceTiers(
+    traceIndex: number,
+    startIndex: number,
+    endIndex: number,
+  ) {
+    const trace = this.traces[traceIndex]!;
+    const baseClearance = this.getBaseObstacleClearance();
+    const targetClearance = this.getPadClearanceForTrace(trace);
+    const existingClearance = this.findExistingPadClearance(
+      traceIndex,
+      startIndex,
+      endIndex,
+      baseClearance,
+      targetClearance,
+    );
+    const step = Math.max(0.025, Math.min(0.05, targetClearance / 10));
+    const tiers: number[] = [targetClearance];
+    for (
+      let clearance = targetClearance - step;
+      clearance > existingClearance + step / 2;
+      clearance -= step
+    ) {
+      tiers.push(clearance);
+    }
+    return uniqueDescending(tiers).filter(
+      (clearance) => clearance > existingClearance + WIDTH_EPSILON,
+    );
+  }
+
+  private findExistingPadClearance(
+    traceIndex: number,
+    startIndex: number,
+    endIndex: number,
+    baseClearance: number,
+    targetClearance: number,
+  ) {
+    if (
+      this.routeRangeHasPadClearanceViolation(
+        traceIndex,
+        startIndex,
+        endIndex,
+        baseClearance,
+      )
+    ) {
+      return baseClearance;
+    }
+    if (
+      !this.routeRangeHasPadClearanceViolation(
+        traceIndex,
+        startIndex,
+        endIndex,
+        targetClearance,
+      )
+    ) {
+      return targetClearance;
+    }
+    let low = baseClearance;
+    let high = targetClearance;
+    for (let iteration = 0; iteration < 7; iteration++) {
+      const midpoint = (low + high) / 2;
       if (
-        !this.routeRangeHasPadClearanceViolation(
+        this.routeRangeHasPadClearanceViolation(
           traceIndex,
           startIndex,
           endIndex,
-          clearance,
+          midpoint,
         )
       ) {
-        return clearance;
+        high = midpoint;
+      } else {
+        low = midpoint;
       }
     }
-    return baseClearance;
+    return Math.max(baseClearance, Number((low - 0.001).toFixed(6)));
   }
 
   private routeRangeHasPadClearanceViolation(
@@ -1532,7 +1647,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     return false;
   }
 
-  private countPadClearanceViolations() {
+  private countPadClearanceViolations(clearanceOverride?: number) {
     let violationCount = 0;
     for (const traceIndex of this.traceIndices) {
       const trace = this.traces[traceIndex];
@@ -1559,7 +1674,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
             start: Math.max(0, routeIndex - 1),
             end: Math.min(trace.route.length - 1, routeIndex + 2),
           },
-          obstacleClearance: this.getPadClearanceForTrace(trace),
+          obstacleClearance:
+            clearanceOverride ?? this.getPadClearanceForTrace(trace),
         });
         if (
           collisions.some(
@@ -1571,6 +1687,15 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       }
     }
     return violationCount;
+  }
+
+  private countPadClearanceViolationsByTier() {
+    return Object.fromEntries(
+      PAD_CLEARANCE_MEASUREMENT_TIERS.map((clearance) => [
+        clearance.toFixed(2),
+        this.countPadClearanceViolations(clearance),
+      ]),
+    );
   }
 
   private findConnectionForTrace(trace: SimplifiedPcbTrace) {
@@ -1637,6 +1762,12 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
       remainingPadClearanceViolationCount:
         this.remainingPadClearanceViolationCount,
+      initialPadClearanceViolationCountByClearance: {
+        ...this.initialPadClearanceViolationCountByClearance,
+      },
+      remainingPadClearanceViolationCountByClearance: {
+        ...this.remainingPadClearanceViolationCountByClearance,
+      },
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }

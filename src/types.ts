@@ -19,7 +19,10 @@ export type PowerTraceExpanderInput = SimpleRouteJson;
 export type PowerTraceExpanderOptions = {
   /** Restrict the top-level scan while still allowing nearby traces to move. */
   onlyConnectionNames?: readonly string[];
-  /** Preferred edge clearance from power copper to unrelated pads. */
+  /**
+   * Preferred edge clearance from power copper to unrelated pads. Defaults
+   * to half of each power trace's nominal width.
+   */
   powerTraceToPadClearance?: number;
 };
 
@@ -32,6 +35,7 @@ export type PowerTraceCleanupProblem = {
   traceIndices?: readonly number[];
   maxRerouteLength?: number;
   clearancePaddingTiers?: readonly number[];
+  /** Defaults to half of each power trace's nominal width. */
   desiredPadClearance?: number;
 };
 

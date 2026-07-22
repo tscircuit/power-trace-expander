@@ -151,7 +151,6 @@ test("reroutes a power trace to its preferred pad clearance", async () => {
   const solver = new PowerTraceCleanupSolver({
     simpleRouteJson: problem,
     traces: problem.traces,
-    desiredPadClearance: 0.25,
   });
 
   solver.solve();
@@ -159,6 +158,7 @@ test("reroutes a power trace to its preferred pad clearance", async () => {
   const output = solver.getOutput();
   const index = new SpatialObstacleIndex(problem, output, 0);
   const route = output[0]!.route;
+  const powerWires = route.filter((point) => point.route_type === "wire");
   for (let routeIndex = 0; routeIndex < route.length - 1; routeIndex++) {
     const start = route[routeIndex];
     const end = route[routeIndex + 1];
@@ -177,13 +177,52 @@ test("reroutes a power trace to its preferred pad clearance", async () => {
         width: Math.max(start.width, end.width),
         connectionNames: ["POWER"],
         ignoreTraceIndex: 0,
-        obstacleClearance: 0.25,
+        // The default preferred clearance is half the 0.8 mm nominal width.
+        obstacleClearance: 0.4,
       }),
     ).toBe(false);
   }
+  expect(countNonOctilinearSegments(powerWires)).toBe(0);
   expect(solver.stats.padClearanceRerouteCount).toBeGreaterThanOrEqual(1);
   expect(solver.stats.unresolvedPadClearanceCount).toBe(0);
   await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
     svgName: "power-trace-pad-clearance",
+  });
+});
+
+test("keeps a partial pad-clearance improvement when half-width is blocked", async () => {
+  const problem = structuredClone(cleanupCases.constrainedPadClearance);
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+  });
+
+  solver.solve();
+
+  const output = solver.getOutput();
+  const index = new SpatialObstacleIndex(problem, output, 0);
+  const powerWires = output[0]!.route.filter(
+    (point) => point.route_type === "wire",
+  );
+  const collidesAtClearance = (obstacleClearance: number) =>
+    powerWires.slice(0, -1).some((start, routeIndex) => {
+      const end = powerWires[routeIndex + 1]!;
+      return index.collides({
+        start,
+        end,
+        layer: start.layer,
+        width: Math.max(start.width, end.width),
+        connectionNames: ["POWER"],
+        ignoreTraceIndex: 0,
+        obstacleClearance,
+      });
+    });
+
+  expect(collidesAtClearance(0.2)).toBe(false);
+  expect(collidesAtClearance(0.25)).toBe(true);
+  expect(countNonOctilinearSegments(powerWires)).toBe(0);
+  expect(solver.stats.padClearanceRerouteCount).toBeGreaterThanOrEqual(1);
+  await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
+    svgName: "constrained-pad-clearance",
   });
 });
