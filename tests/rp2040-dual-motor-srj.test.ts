@@ -10,6 +10,8 @@ import { getTraceWidthMetrics } from "./helpers/getTraceWidthMetrics";
 
 setDefaultTimeout(60_000);
 
+const R_ISEN_B_GROUND_CONNECTION = "source_trace_141";
+
 test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async () => {
   const problem = structuredClone(
     rp2040DualMotorProblem,
@@ -117,8 +119,8 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(solver.attemptedLayerGridCount).toBeLessThan(60);
   expect(solver.layerReroutedTraceCount).toBeGreaterThan(0);
   expect(solver.insertedViaCount).toBeGreaterThan(0);
-  expect(solver.removedViaPairCount).toBeGreaterThanOrEqual(4);
-  expect(solver.removedViaCount).toBeGreaterThanOrEqual(8);
+  expect(solver.removedViaPairCount).toBeGreaterThanOrEqual(7);
+  expect(solver.removedViaCount).toBeGreaterThanOrEqual(14);
   expect(solver.simplifiedPathCount).toBeGreaterThanOrEqual(40);
   expect(solver.normalizedSegmentCount).toBeGreaterThanOrEqual(60);
   expect(solver.cleanupClearanceShoveCount).toBeGreaterThan(0);
@@ -138,7 +140,37 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(
     solver.initialPadClearanceViolationCountByClearance["0.50"]! -
       solver.remainingPadClearanceViolationCountByClearance["0.50"]!,
-  ).toBeGreaterThanOrEqual(20);
+  ).toBeGreaterThanOrEqual(16);
+  const rIsenBGroundConnection = problem.connections.find(
+    (connection) => connection.name === R_ISEN_B_GROUND_CONNECTION,
+  )!;
+  const rIsenBNearbyVias = solver
+    .getOutput()
+    .filter((trace) =>
+      [
+        trace.pcb_trace_id,
+        trace.connection_name,
+        trace.source_trace_id,
+        trace.rootConnectionName,
+        ...(trace.mergedConnectionNames ?? []),
+        ...(trace.connectsTo ?? []),
+      ]
+        .filter((name): name is string => Boolean(name))
+        .some((name) => name.includes(R_ISEN_B_GROUND_CONNECTION)),
+    )
+    .flatMap((trace) => trace.route)
+    .filter(
+      (point) =>
+        point.route_type === "via" &&
+        rIsenBGroundConnection.pointsToConnect.some(
+          (connectionPoint) =>
+            Math.hypot(
+              point.x - connectionPoint.x,
+              point.y - connectionPoint.y,
+            ) < 2,
+        ),
+    );
+  expect(rIsenBNearbyVias).toEqual([]);
   const routedViaIndex = new SpatialObstacleIndex(problem, solver.getOutput());
   for (
     let traceIndex = 0;

@@ -79,6 +79,7 @@ const GRID_OFFSETS = [
 ] as const;
 
 const PAD_CLEARANCE_MEASUREMENT_TIERS = [0.15, 0.2, 0.25, 0.3, 0.4, 0.5];
+const VIA_PAIR_PREFERRED_PAD_CLEARANCE = 0.15;
 
 const isWire = (
   point: SimplifiedPcbTrace["route"][number] | undefined,
@@ -1520,6 +1521,19 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     const targetClearance = this.getPadClearanceForTrace(trace);
     if (kind === "pad-clearance") return targetClearance;
 
+    // Via-pair removal runs before the dedicated clearance pass. Requiring it
+    // to preserve the full half-width target can retain a redundant layer
+    // excursion even when the direct route is DRC-safe. Preserve the former
+    // preferred-clearance tier here; the following pass can then shove and
+    // reroute the direct path toward the per-trace target.
+    const preservationTarget =
+      kind === "via-pair"
+        ? Math.min(
+            targetClearance,
+            Math.max(baseClearance, VIA_PAIR_PREFERRED_PAD_CLEARANCE),
+          )
+        : targetClearance;
+
     // Do not trade away clearance that a route already has. For unavoidable
     // package escapes, preserve the clearance the preceding pass achieved.
     // A short binary search avoids dozens of indexed collision queries when
@@ -1529,7 +1543,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       startIndex,
       endIndex,
       baseClearance,
-      targetClearance,
+      preservationTarget,
     );
   }
 
