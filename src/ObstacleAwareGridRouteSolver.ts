@@ -93,6 +93,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
   private readonly open = new MinHeap();
   private readonly bestCost: Float64Array;
   private readonly closed: Uint8Array;
+  private closedCellCount = 0;
   private targetCell: { row: number; column: number };
   private output: GridRouteOutput | null = null;
 
@@ -206,6 +207,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
     const flatIndex = this.toFlatIndex(node.row, node.column);
     if (this.closed[flatIndex]) return;
     this.closed[flatIndex] = 1;
+    this.closedCellCount++;
 
     if (
       node.row === this.targetCell.row &&
@@ -339,15 +341,13 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
   }
 
   private createStats() {
-    let closedCells = 0;
-    for (const value of this.closed) closedCells += value;
     return {
       phase: "obstacle-aware-grid-search",
       gridSize: this.problem.gridSize,
       traceWidth: this.problem.traceWidth,
       gridOffset: this.problem.gridOffset,
       openCells: this.open.size,
-      closedCells,
+      closedCells: this.closedCellCount,
       gridCells: this.rows * this.columns,
     };
   }

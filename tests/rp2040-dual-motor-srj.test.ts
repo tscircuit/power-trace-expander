@@ -13,28 +13,67 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
     rp2040DualMotorProblem,
   ) as unknown as SimpleRouteJson;
   const before = getTraceWidthMetrics(problem, problem.traces ?? []);
+  const conservativeBefore = getTraceWidthMetrics(
+    problem,
+    problem.traces ?? [],
+    { segmentWidthSemantics: "endpoint-minimum" },
+  );
   const solver = new PowerTraceExpanderSolver(problem);
+  const startTime = performance.now();
 
   solver.solve();
 
+  const runtimeMs = performance.now() - startTime;
   const after = getTraceWidthMetrics(problem, solver.getOutput());
+  const conservativeAfter = getTraceWidthMetrics(problem, solver.getOutput(), {
+    segmentWidthSemantics: "endpoint-minimum",
+  });
   const powerBefore = before.get(1)!;
   const powerAfter = after.get(1)!;
+  const conservativePowerBefore = conservativeBefore.get(1)!;
+  const conservativePowerAfter = conservativeAfter.get(1)!;
   const logicBefore = before.get(0.25)!;
   const logicAfter = after.get(0.25)!;
 
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
   expect(powerBefore.nominalCoverage).toBeLessThan(0.02);
-  expect(powerAfter.nominalCoverage).toBeGreaterThan(0.45);
-  expect(powerAfter.averageWidth).toBeGreaterThan(0.6);
-  expect(logicAfter.nominalCoverage).toBeGreaterThan(0.85);
+  expect(powerAfter.nominalCoverage).toBeGreaterThan(0.795);
+  expect(powerAfter.averageWidth).toBeGreaterThan(0.9);
+  expect(powerAfter.minimumWidth).toBeGreaterThanOrEqual(0.15);
+  expect(powerAfter.p05Width).toBeGreaterThanOrEqual(0.35);
+  expect(powerAfter.p10Width).toBeGreaterThanOrEqual(0.5);
+  expect(powerAfter.coverageByFraction[0.5]).toBeGreaterThan(0.92);
+  expect(powerAfter.coverageByFraction[0.875]).toBeGreaterThan(0.82);
+  expect(powerAfter.normalizedWidthDeficit).toBeLessThan(0.095);
+  expect(powerAfter.longestBelowHalfNominalRun).toBeLessThan(4);
+  expect(powerAfter.longestUnderNominalRun).toBeLessThan(8.6);
+  expect(powerAfter.longestBelowHalfNominalRun).toBeLessThan(
+    powerBefore.longestBelowHalfNominalRun / 7,
+  );
+  expect(powerAfter.totalLength / powerBefore.totalLength).toBeLessThan(1.06);
+  expect(conservativePowerAfter.nominalCoverage).toBeGreaterThan(0.775);
+  expect(conservativePowerAfter.averageWidth).toBeGreaterThan(0.895);
+  expect(conservativePowerAfter.normalizedWidthDeficit).toBeLessThan(0.105);
+  expect(conservativePowerAfter.normalizedWidthDeficit).toBeLessThan(
+    conservativePowerBefore.normalizedWidthDeficit / 7,
+  );
+  expect(logicAfter.nominalCoverage).toBeGreaterThan(0.994);
   expect(logicAfter.nominalCoverage).toBeGreaterThan(
     logicBefore.nominalCoverage * 2,
   );
-  expect(solver.reroutedSegmentCount).toBeGreaterThan(50);
+  expect(solver.reroutedSegmentCount).toBeGreaterThan(45);
   expect(solver.pushedTraceCount).toBeGreaterThan(0);
-  expect(solver.keptTraceCount).toBeGreaterThanOrEqual(96);
+  expect(solver.elasticPushedTraceCount).toBeGreaterThan(0);
+  expect(solver.completedPassCount).toBeGreaterThanOrEqual(2);
+  expect(solver.completedPassCount).toBeLessThanOrEqual(4);
+  expect(solver.plateauReached).toBe(true);
+  expect(solver.lastNormalizedWidthDeficitGain).toBeLessThan(0.001);
+  expect(solver.normalizedWidthDeficitGainByPass[0]).toBeGreaterThan(0.5);
+  expect(solver.normalizedWidthDeficitGainByPass.at(-1)).toBeLessThan(0.001);
+  expect(solver.iterations).toBeLessThan(4_100_000);
+  expect(solver.attemptedGridCount).toBeLessThan(16_000);
+  expect(runtimeMs).toBeLessThan(20_000);
 
   await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path);
 });

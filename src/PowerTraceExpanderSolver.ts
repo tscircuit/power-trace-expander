@@ -4,7 +4,9 @@ import type {
 } from "@tscircuit/core";
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
+import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
+  clamp,
   distance,
   splitUnderWidthWireSegments,
   WIDTH_EPSILON,
@@ -48,6 +50,16 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   readonly inputProblem: PowerTraceExpanderInput;
   traces: SimplifiedPcbTrace[];
   obstacleIndex: SpatialObstacleIndex;
+  private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly traceOrder: number[];
+  private traceOrderCursor = -1;
+  private readonly maxPassCount = 4;
+  private previousWidthDeficit = 0;
+  passIndex = 0;
+  completedPassCount = 0;
+  lastNormalizedWidthDeficitGain = 0;
+  readonly normalizedWidthDeficitGainByPass: number[] = [];
+  plateauReached = false;
 
   phase: SolverPhase = "scan-trace";
   traceIndex = -1;
@@ -64,14 +76,19 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   keptTraceCount = 0;
   recreatedTraceCount = 0;
   expandedSegmentCount = 0;
+  intermediateExpandedSegmentCount = 0;
+  pathWidthUpgradeCount = 0;
+  inPlaceWidthProbeCount = 0;
   reroutedSegmentCount = 0;
   unresolvedSegmentCount = 0;
   attemptedGridCount = 0;
   attemptedInflationCount = 0;
   pushedTraceCount = 0;
+  elasticPushedTraceCount = 0;
 
   private readonly inflationAttemptsBySegment = new Map<string, number>();
   private activeInflationKey: string | null = null;
+  private activeInflationWidth: number | null = null;
 
   declare activeSubSolver:
     | ObstacleAwareGridRouteSolver
@@ -82,13 +99,21 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     super();
     this.inputProblem = structuredClone(inputProblem);
     this.traces = structuredClone(inputProblem.traces ?? []);
+    this.connectionNameResolver = new ConnectionNameResolver(
+      this.inputProblem,
+      this.traces,
+    );
+    this.traceOrder = this.traces.map((_, traceIndex) => traceIndex);
+    this.previousWidthDeficit = this.calculateWidthDeficit().deficit;
     this.obstacleIndex = new SpatialObstacleIndex(
       this.inputProblem,
       this.traces,
       this.traceIndex >= 0 ? this.traceIndex : undefined,
+      [],
+      this.connectionNameResolver,
     );
     this.activeSubSolver = null;
-    this.MAX_ITERATIONS = 2_000_000;
+    this.MAX_ITERATIONS = 8_000_000;
     this.stats = this.createStats();
   }
 
@@ -124,18 +149,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private scanNextTrace() {
-    this.traceIndex++;
+    this.traceOrderCursor++;
     this.routeSegmentIndex = 0;
-    if (this.traceIndex >= this.traces.length) {
-      this.phase = "complete";
+    if (this.traceOrderCursor >= this.traceOrder.length) {
+      this.finishOrStartNextPass();
       return;
     }
+    this.traceIndex = this.traceOrder[this.traceOrderCursor]!;
 
     const trace = this.traces[this.traceIndex]!;
-    // Flatbush is immutable, so rebuild once per trace. Every change made while
-    // processing this trace is same-net geometry and is intentionally ignored;
-    // the next trace sees the completed result in its fresh index.
-    this.rebuildObstacleIndex();
     if (!this.findConnectionForTrace(trace)) {
       // Preserved child-subcircuit traces are supplied as fixed routing
       // geometry but have no connection in the current board SRJ. Re-emit them
@@ -149,12 +171,69 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return;
     }
 
+    // Flatbush is immutable, so rebuild once per trace that will actually be
+    // mutated. Fixed and already-conforming traces need no private index.
+    this.rebuildObstacleIndex();
+
     trace.route = splitUnderWidthWireSegments(
       trace.route,
       this.nominalTraceWidth,
     ) as SimplifiedPcbTrace["route"];
     this.recreatedTraceCount++;
     this.phase = "evaluate-segment";
+  }
+
+  private finishOrStartNextPass() {
+    const { deficit, nominalArea } = this.calculateWidthDeficit();
+    const deficitGain = this.previousWidthDeficit - deficit;
+    this.lastNormalizedWidthDeficitGain =
+      nominalArea <= WIDTH_EPSILON ? 0 : deficitGain / nominalArea;
+    this.normalizedWidthDeficitGainByPass.push(
+      this.lastNormalizedWidthDeficitGain,
+    );
+    this.plateauReached = this.lastNormalizedWidthDeficitGain < 0.001;
+    this.completedPassCount = this.passIndex + 1;
+
+    // A sub-0.1% copper-area gain is the practical plateau. This keeps the
+    // production fixture to three passes while still allowing one follow-up
+    // pass to exploit geometry displaced during the initial solve.
+    if (
+      this.passIndex + 1 < this.maxPassCount &&
+      this.lastNormalizedWidthDeficitGain >= 0.001
+    ) {
+      this.previousWidthDeficit = deficit;
+      this.passIndex++;
+      this.traceOrderCursor = -1;
+      this.traceIndex = -1;
+      this.routeSegmentIndex = 0;
+      this.inflationAttemptsBySegment.clear();
+      this.phase = "scan-trace";
+      return;
+    }
+
+    this.traceIndex = this.traces.length;
+    this.phase = "complete";
+  }
+
+  private calculateWidthDeficit() {
+    let deficit = 0;
+    let nominalArea = 0;
+    for (const trace of this.traces) {
+      if (!this.findConnectionForTrace(trace)) continue;
+      const nominalWidth = this.resolveNominalTraceWidth(trace);
+      for (let index = 0; index < trace.route.length - 1; index++) {
+        const start = trace.route[index];
+        const end = trace.route[index + 1];
+        if (!isWire(start) || !isWire(end) || start.layer !== end.layer)
+          continue;
+        const segmentLength = distance(start, end);
+        // Circuit JSON assigns a wire segment the width of its first point.
+        const segmentWidth = start.width;
+        nominalArea += segmentLength * nominalWidth;
+        deficit += segmentLength * Math.max(0, nominalWidth - segmentWidth);
+      }
+    }
+    return { deficit, nominalArea };
   }
 
   private evaluateNextSegment() {
@@ -182,18 +261,22 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     }
 
     const connectionNames = this.getTraceConnectionNames(trace);
-    const canExpand = this.canExpandSegmentAndEndpoints(
+    const currentWidth = Math.min(start.width, end.width);
+    const bestInPlaceWidth = this.findMaximumSafeInPlaceWidth(
       trace,
       segmentIndex,
       connectionNames,
     );
 
-    if (canExpand) {
-      start.width = Math.max(start.width, this.nominalTraceWidth);
-      end.width = Math.max(end.width, this.nominalTraceWidth);
-      this.expandedSegmentCount++;
-      this.routeSegmentIndex++;
-      return;
+    if (bestInPlaceWidth > currentWidth + WIDTH_EPSILON) {
+      start.width = Math.max(start.width, bestInPlaceWidth);
+      end.width = Math.max(end.width, bestInPlaceWidth);
+      if (bestInPlaceWidth >= this.nominalTraceWidth - WIDTH_EPSILON) {
+        this.expandedSegmentCount++;
+        this.routeSegmentIndex++;
+        return;
+      }
+      this.intermediateExpandedSegmentCount++;
     }
 
     if (this.startTraceInflation(trace, segmentIndex)) return;
@@ -348,7 +431,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         !this.gridRouteReplacementCollides(output) &&
         !this.gridRouteBoundaryCollides(output)
       ) {
-        this.applyGridRoute(output);
+        this.applyGridRoute(this.maximizeGridRouteWidth(output));
         this.activeSubSolver = null;
         return;
       }
@@ -361,12 +444,22 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private startTraceInflation(trace: SimplifiedPcbTrace, segmentIndex: number) {
-    if (!this.hasOnlyPushableTraceBlockers(trace, segmentIndex)) return false;
-    const corridor = this.getLocalInflationCorridor(trace, segmentIndex);
-    if (corridor.length === 0) return false;
     const segmentStart = trace.route[segmentIndex];
     const segmentEnd = trace.route[segmentIndex + 1];
     if (!isWire(segmentStart) || !isWire(segmentEnd)) return false;
+    const currentWidth = Math.min(segmentStart.width, segmentEnd.width);
+    const targetWidth = this.findBestPushableInflationWidth(
+      trace,
+      segmentIndex,
+      currentWidth,
+    );
+    if (!targetWidth) return false;
+    const corridor = this.getLocalInflationCorridor(
+      trace,
+      segmentIndex,
+      targetWidth,
+    );
+    if (corridor.length === 0) return false;
     const key = [
       this.traceIndex,
       segmentStart.x,
@@ -379,15 +472,19 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
     this.inflationAttemptsBySegment.set(key, attemptCount + 1);
     this.activeInflationKey = key;
+    this.activeInflationWidth = targetWidth;
     this.attemptedInflationCount++;
-    this.activeSubSolver = new LocalTraceInflationSolver({
-      simpleRouteJson: this.inputProblem,
-      traces: this.traces,
-      powerTraceIndex: this.traceIndex,
-      nominalPowerWidth: this.nominalTraceWidth,
-      corridor,
-      maxRerouteLength: 10,
-    });
+    this.activeSubSolver = new LocalTraceInflationSolver(
+      {
+        simpleRouteJson: this.inputProblem,
+        traces: this.traces,
+        powerTraceIndex: this.traceIndex,
+        nominalPowerWidth: targetWidth,
+        corridor,
+        maxRerouteLength: 10,
+      },
+      this.connectionNameResolver,
+    );
     this.phase = "try-trace-inflation";
     return true;
   }
@@ -395,6 +492,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private hasOnlyPushableTraceBlockers(
     trace: SimplifiedPcbTrace,
     segmentIndex: number,
+    targetWidth: number,
   ) {
     const firstAffectedSegment = Math.max(0, segmentIndex - 1);
     const lastAffectedSegment = Math.min(
@@ -415,7 +513,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         start,
         end,
         layer: start.layer,
-        width: this.nominalTraceWidth,
+        width: targetWidth,
         connectionNames: this.getTraceConnectionNames(trace),
         ignoreTraceIndex: this.traceIndex,
         ignoreRouteRange: {
@@ -440,7 +538,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
             connection.width ??
             this.inputProblem.nominalTraceWidth ??
             this.inputProblem.minTraceWidth) >=
-            this.nominalTraceWidth - WIDTH_EPSILON
+            targetWidth - WIDTH_EPSILON
         ) {
           return false;
         }
@@ -453,6 +551,27 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     return pushableTraceIndices.size > 0 && pushableTraceIndices.size <= 2;
   }
 
+  private findBestPushableInflationWidth(
+    trace: SimplifiedPcbTrace,
+    segmentIndex: number,
+    currentWidth: number,
+  ) {
+    const quantum = this.nominalTraceWidth >= 0.5 ? 0.05 : 0.0125;
+    for (
+      let targetWidth = this.nominalTraceWidth;
+      targetWidth > currentWidth + WIDTH_EPSILON;
+      targetWidth -= quantum
+    ) {
+      const quantizedTarget = Number(targetWidth.toFixed(6));
+      if (
+        this.hasOnlyPushableTraceBlockers(trace, segmentIndex, quantizedTarget)
+      ) {
+        return quantizedTarget;
+      }
+    }
+    return null;
+  }
+
   private stepActiveInflationSolver() {
     const solver = this.activeSubSolver as LocalTraceInflationSolver;
     solver.step();
@@ -463,8 +582,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       if (output) {
         this.traces = output.traces;
         this.pushedTraceCount++;
+        if (output.strategy === "elastic") this.elasticPushedTraceCount++;
         this.activeSubSolver = null;
         this.activeInflationKey = null;
+        this.activeInflationWidth = null;
         this.rebuildObstacleIndex();
         this.phase = "evaluate-segment";
         return;
@@ -477,6 +598,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.inflationAttemptsBySegment.set(this.activeInflationKey, 2);
     }
     this.activeInflationKey = null;
+    this.activeInflationWidth = null;
     this.activeSubSolver = null;
     this.phase = "evaluate-segment";
   }
@@ -484,6 +606,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private getLocalInflationCorridor(
     trace: SimplifiedPcbTrace,
     segmentIndex: number,
+    targetWidth: number,
   ): InflationCorridorSegment[] {
     const firstPoint = trace.route[segmentIndex];
     const secondPoint = trace.route[segmentIndex + 1];
@@ -495,6 +618,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return [];
     }
 
+    const maximumCorridorLength = clamp(targetWidth * 4, 2, 4);
+    const halfCorridorLength = maximumCorridorLength / 2;
     let startIndex = segmentIndex;
     let distanceBefore = 0;
     while (startIndex > 0) {
@@ -502,7 +627,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       const end = trace.route[startIndex];
       if (!isWire(start) || !isWire(end) || start.layer !== end.layer) break;
       const segmentLength = distance(start, end);
-      if (distanceBefore + segmentLength > 5 + WIDTH_EPSILON) break;
+      if (distanceBefore + segmentLength > halfCorridorLength + WIDTH_EPSILON)
+        break;
       distanceBefore += segmentLength;
       startIndex--;
     }
@@ -514,7 +640,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       const end = trace.route[endIndex + 1];
       if (!isWire(start) || !isWire(end) || start.layer !== end.layer) break;
       const segmentLength = distance(start, end);
-      if (distanceAfter + segmentLength > 5 + WIDTH_EPSILON) break;
+      if (distanceAfter + segmentLength > halfCorridorLength + WIDTH_EPSILON)
+        break;
       distanceAfter += segmentLength;
       endIndex++;
     }
@@ -522,7 +649,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     // Spend unused room from either half of the 10 mm window on the other
     // side. This keeps the affected area small while still covering a full
     // corridor when the blocked segment is close to one endpoint.
-    let remainingDistance = 10 - distanceBefore - distanceAfter;
+    let remainingDistance =
+      maximumCorridorLength - distanceBefore - distanceAfter;
     while (remainingDistance > WIDTH_EPSILON && startIndex > 0) {
       const start = trace.route[startIndex - 1];
       const end = trace.route[startIndex];
@@ -554,7 +682,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         start,
         end,
         layer: start.layer,
-        width: this.nominalTraceWidth,
+        width: targetWidth,
       });
     }
     return corridor;
@@ -644,6 +772,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
           start,
           end,
           layer: start.layer,
+          // Core's joint/transition clearance is conservative around route
+          // points, so validate both endpoint widths at splice boundaries.
           width: Math.max(start.width, end.width, output.traceWidth),
           connectionNames,
           ignoreTraceIndex: this.traceIndex,
@@ -663,6 +793,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     trace: SimplifiedPcbTrace,
     segmentIndex: number,
     connectionNames: string[],
+    targetWidth = this.nominalTraceWidth,
   ) {
     const firstAffectedSegment = Math.max(0, segmentIndex - 1);
     const lastAffectedSegment = Math.min(
@@ -686,10 +817,14 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       }
       const touchesExpandedPoint =
         affectedIndex <= segmentIndex + 1 && affectedIndex + 1 >= segmentIndex;
+      // Although a serialized wire segment takes its width from its first
+      // point, core validates the copper transition around both endpoints.
+      // Checking adjacent segments at the larger endpoint width keeps the
+      // standalone solver aligned with the fully rendered board DRC.
       const proposedWidth = Math.max(
         affectedStart.width,
         affectedEnd.width,
-        touchesExpandedPoint ? this.nominalTraceWidth : 0,
+        touchesExpandedPoint ? targetWidth : 0,
       );
       if (
         this.obstacleIndex.collides({
@@ -709,6 +844,116 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       }
     }
     return true;
+  }
+
+  private findMaximumSafeInPlaceWidth(
+    trace: SimplifiedPcbTrace,
+    segmentIndex: number,
+    connectionNames: string[],
+  ) {
+    const start = trace.route[segmentIndex];
+    const end = trace.route[segmentIndex + 1];
+    if (!isWire(start) || !isWire(end)) return 0;
+    const currentWidth = Math.min(start.width, end.width);
+    if (
+      this.probeInPlaceWidth(
+        trace,
+        segmentIndex,
+        connectionNames,
+        this.nominalTraceWidth,
+      )
+    ) {
+      return this.nominalTraceWidth;
+    }
+
+    let lowerWidth = currentWidth;
+    let upperWidth = this.nominalTraceWidth;
+    for (let probe = 0; probe < 7; probe++) {
+      const candidateWidth = (lowerWidth + upperWidth) / 2;
+      if (candidateWidth <= lowerWidth + WIDTH_EPSILON) break;
+      if (
+        this.probeInPlaceWidth(
+          trace,
+          segmentIndex,
+          connectionNames,
+          candidateWidth,
+        )
+      ) {
+        lowerWidth = candidateWidth;
+      } else {
+        upperWidth = candidateWidth;
+      }
+    }
+
+    const quantum = this.nominalTraceWidth >= 0.5 ? 0.025 : 0.0125;
+    const quantizedWidth = Math.max(
+      currentWidth,
+      Math.floor((lowerWidth + WIDTH_EPSILON) / quantum) * quantum,
+    );
+    if (
+      quantizedWidth > currentWidth + WIDTH_EPSILON &&
+      this.probeInPlaceWidth(
+        trace,
+        segmentIndex,
+        connectionNames,
+        quantizedWidth,
+      )
+    ) {
+      return quantizedWidth;
+    }
+    return currentWidth;
+  }
+
+  private probeInPlaceWidth(
+    trace: SimplifiedPcbTrace,
+    segmentIndex: number,
+    connectionNames: string[],
+    width: number,
+  ) {
+    this.inPlaceWidthProbeCount++;
+    return this.canExpandSegmentAndEndpoints(
+      trace,
+      segmentIndex,
+      connectionNames,
+      width,
+    );
+  }
+
+  private maximizeGridRouteWidth(output: GridRouteOutput) {
+    if (output.traceWidth >= this.nominalTraceWidth - WIDTH_EPSILON) {
+      return output;
+    }
+    let lowerWidth = output.traceWidth;
+    let upperWidth = this.nominalTraceWidth;
+    for (let probe = 0; probe < 7; probe++) {
+      const candidateWidth = (lowerWidth + upperWidth) / 2;
+      const candidate = { ...output, traceWidth: candidateWidth };
+      if (
+        !this.gridRouteReplacementCollides(candidate) &&
+        !this.gridRouteBoundaryCollides(candidate)
+      ) {
+        lowerWidth = candidateWidth;
+      } else {
+        upperWidth = candidateWidth;
+      }
+    }
+
+    const quantum = this.nominalTraceWidth >= 0.5 ? 0.025 : 0.0125;
+    const quantizedWidth = Math.max(
+      output.traceWidth,
+      Math.floor((lowerWidth + WIDTH_EPSILON) / quantum) * quantum,
+    );
+    if (quantizedWidth > output.traceWidth + WIDTH_EPSILON) {
+      const candidate = { ...output, traceWidth: quantizedWidth };
+      if (
+        !this.gridRouteReplacementCollides(candidate) &&
+        !this.gridRouteBoundaryCollides(candidate)
+      ) {
+        this.pathWidthUpgradeCount++;
+        return candidate;
+      }
+    }
+    return output;
   }
 
   private getExponentialIntervalCandidates(
@@ -911,12 +1156,21 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.inputProblem,
       this.traces,
       this.traceIndex,
+      [],
+      this.connectionNameResolver,
     );
   }
 
   private createStats() {
     return {
       phase: this.phase,
+      pass: this.passIndex + 1,
+      completedPassCount: this.completedPassCount,
+      lastNormalizedWidthDeficitGain: this.lastNormalizedWidthDeficitGain,
+      normalizedWidthDeficitGainByPass: [
+        ...this.normalizedWidthDeficitGainByPass,
+      ],
+      plateauReached: this.plateauReached,
       traceIndex: this.traceIndex,
       traceCount: this.traces.length,
       routeSegmentIndex: this.routeSegmentIndex,
@@ -929,18 +1183,28 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       keptTraceCount: this.keptTraceCount,
       recreatedTraceCount: this.recreatedTraceCount,
       expandedSegmentCount: this.expandedSegmentCount,
+      intermediateExpandedSegmentCount: this.intermediateExpandedSegmentCount,
+      pathWidthUpgradeCount: this.pathWidthUpgradeCount,
+      inPlaceWidthProbeCount: this.inPlaceWidthProbeCount,
       reroutedSegmentCount: this.reroutedSegmentCount,
       unresolvedSegmentCount: this.unresolvedSegmentCount,
       attemptedGridCount: this.attemptedGridCount,
       attemptedInflationCount: this.attemptedInflationCount,
+      activeInflationWidth: this.activeInflationWidth,
       pushedTraceCount: this.pushedTraceCount,
+      elasticPushedTraceCount: this.elasticPushedTraceCount,
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }
 
   computeProgress() {
     if (this.traces.length === 0) return 1;
-    return Math.min(0.99, Math.max(0, this.traceIndex) / this.traces.length);
+    return Math.min(
+      0.99,
+      (this.passIndex +
+        Math.max(0, this.traceOrderCursor) / this.traces.length) /
+        this.maxPassCount,
+    );
   }
 
   override getConstructorParams() {

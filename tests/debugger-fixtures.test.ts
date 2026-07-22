@@ -13,7 +13,7 @@ test("debugger catalog discovers both simple and complex fixtures", async () => 
 
   expect(cosmosConfig.fixtureFileSuffix).toBe("fixture");
   expect(fixturePaths.filter((path) => path.includes("/simple/"))).toHaveLength(
-    4,
+    5,
   );
   expect(
     fixturePaths.filter((path) => path.includes("/complex/")),
