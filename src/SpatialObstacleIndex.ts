@@ -21,6 +21,7 @@ export class SpatialObstacleIndex {
     simpleRouteJson: SimpleRouteJson,
     traces: SimplifiedPcbTrace[],
     dynamicTraceIndex?: number,
+    extraItems: IndexedObstacle[] = [],
   ) {
     this.bounds = simpleRouteJson.bounds;
     this.dynamicTraceIndex = dynamicTraceIndex;
@@ -33,6 +34,7 @@ export class SpatialObstacleIndex {
         approximateObstacleWithRects(obstacle),
       ),
       ...this.createTraceItems(traces),
+      ...extraItems,
     ];
     this.index = this.items.length > 0 ? new Flatbush(this.items.length) : null;
     for (const item of this.items) {
@@ -100,6 +102,10 @@ export class SpatialObstacleIndex {
   }
 
   collides(query: CollisionQuery): boolean {
+    return this.isOutsideBounds(query) || this.findCollisions(query).length > 0;
+  }
+
+  findCollisions(query: CollisionQuery): IndexedObstacle[] {
     const radius = query.width / 2 + this.clearance;
     const queryBounds = {
       minX: Math.min(query.start.x, query.end.x) - radius,
@@ -107,15 +113,6 @@ export class SpatialObstacleIndex {
       maxX: Math.max(query.start.x, query.end.x) + radius,
       maxY: Math.max(query.start.y, query.end.y) + radius,
     };
-    if (
-      queryBounds.minX < this.bounds.minX ||
-      queryBounds.maxX > this.bounds.maxX ||
-      queryBounds.minY < this.bounds.minY ||
-      queryBounds.maxY > this.bounds.maxY
-    ) {
-      return true;
-    }
-
     const candidates =
       this.index?.search(
         queryBounds.minX,
@@ -123,6 +120,7 @@ export class SpatialObstacleIndex {
         queryBounds.maxX,
         queryBounds.maxY,
       ) ?? [];
+    const collisions: IndexedObstacle[] = [];
     for (const itemIndex of candidates) {
       const item = this.items[itemIndex]!;
       if (!item.layers.includes(query.layer)) continue;
@@ -153,10 +151,19 @@ export class SpatialObstacleIndex {
           maxY: item.maxY + radius,
         })
       ) {
-        return true;
+        collisions.push(item);
       }
     }
+    return collisions;
+  }
 
-    return false;
+  private isOutsideBounds(query: CollisionQuery) {
+    const radius = query.width / 2 + this.clearance;
+    return (
+      Math.min(query.start.x, query.end.x) - radius < this.bounds.minX ||
+      Math.max(query.start.x, query.end.x) + radius > this.bounds.maxX ||
+      Math.min(query.start.y, query.end.y) - radius < this.bounds.minY ||
+      Math.max(query.start.y, query.end.y) + radius > this.bounds.maxY
+    );
   }
 }

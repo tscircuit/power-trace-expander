@@ -34,6 +34,28 @@ export type CollisionQuery = {
   ignoreRouteRange?: { start: number; end: number };
 };
 
+export type InflationCorridorSegment = {
+  start: Point;
+  end: Point;
+  layer: string;
+  width: number;
+};
+
+export type LocalTraceInflationProblem = {
+  simpleRouteJson: SimpleRouteJson;
+  traces: SimplifiedPcbTrace[];
+  powerTraceIndex: number;
+  nominalPowerWidth: number;
+  corridor: InflationCorridorSegment[];
+  maxRerouteLength?: number;
+};
+
+export type LocalTraceInflationOutput = {
+  traces: SimplifiedPcbTrace[];
+  pushedTraceIndex: number;
+  replacedRange: { startIndex: number; endIndex: number };
+};
+
 export type GridOffset = { x: number; y: number };
 
 export type GridRouteProblem = {

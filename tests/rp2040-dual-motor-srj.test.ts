@@ -33,6 +33,7 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
     logicBefore.nominalCoverage * 2,
   );
   expect(solver.reroutedSegmentCount).toBeGreaterThan(50);
+  expect(solver.pushedTraceCount).toBeGreaterThan(0);
   expect(solver.keptTraceCount).toBeGreaterThanOrEqual(96);
 
   await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path);

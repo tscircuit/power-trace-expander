@@ -3,3 +3,4 @@ dist/
 cosmos-export/
 coverage/
 .DS_Store
+.vercel

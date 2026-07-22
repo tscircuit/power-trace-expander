@@ -1,11 +1,14 @@
 import { GenericSolverDebugger } from "@tscircuit/solver-utils/react";
 import { useMemo } from "react";
 import { PowerTraceExpanderSolver } from "../src";
-import { centralObstacleFixture } from "./central-obstacle";
+import { simplifiedCases } from "./simplified-cases";
 
 export default function PowerTraceExpanderDebuggerFixture() {
   const solver = useMemo(
-    () => new PowerTraceExpanderSolver(structuredClone(centralObstacleFixture)),
+    () =>
+      new PowerTraceExpanderSolver(
+        structuredClone(simplifiedCases.inflationPushesSignal),
+      ),
     [],
   );
 

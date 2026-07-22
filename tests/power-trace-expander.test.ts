@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { SimpleRouteJson } from "@tscircuit/core";
 import { centralObstacleFixture } from "../fixtures/central-obstacle";
+import { simplifiedCases } from "../fixtures/simplified-cases";
 import {
   PowerTraceExpanderAutorouter,
   PowerTraceExpanderSolver,
@@ -45,6 +46,27 @@ test("widens clear intervals and obstacle-reroutes a blocked interval", () => {
   expect(solver.attemptedGridCount).toBeGreaterThan(0);
   expect(wirePoints.every((point) => point.width >= 0.8)).toBe(true);
   expect(wirePoints.some((point) => Math.abs(point.y) > 1)).toBe(true);
+});
+
+test("inflates a power corridor by locally pushing a lower-width trace", () => {
+  const fixture = structuredClone(simplifiedCases.inflationPushesSignal);
+  const originalSignal = structuredClone(fixture.traces![1]!.route);
+  const solver = new PowerTraceExpanderSolver(fixture);
+
+  solver.solve();
+
+  const [powerTrace, signalTrace] = solver.getOutput();
+  const powerWirePoints = powerTrace!.route.filter(
+    (point) => point.route_type === "wire",
+  );
+  expect(solver.solved).toBe(true);
+  expect(solver.pushedTraceCount).toBeGreaterThan(0);
+  expect(signalTrace!.route).not.toEqual(originalSignal);
+  expect(
+    powerWirePoints.every(
+      (point) => point.width >= 0.8 && Math.abs(point.y) < 1e-6,
+    ),
+  ).toBe(true);
 });
 
 test("uses short indexed rectangles for a rotated obstacle", () => {

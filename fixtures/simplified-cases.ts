@@ -155,4 +155,34 @@ export const simplifiedCases = {
       },
     ],
   }),
+
+  inflationPushesSignal: createBaseFixture({
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 0.8,
+        pointsToConnect: [
+          { x: -4, y: 0, layer: "top" },
+          { x: 4, y: 0, layer: "top" },
+        ],
+      },
+      {
+        name: "SIGNAL",
+        nominalTraceWidth: 0.15,
+        pointsToConnect: [
+          { x: -5, y: 0.55, layer: "top" },
+          { x: 5, y: 0.55, layer: "top" },
+        ],
+      },
+    ],
+    traces: [
+      powerTrace([wire(-4, 0), wire(4, 0)]),
+      {
+        type: "pcb_trace",
+        pcb_trace_id: "pushable-signal",
+        connection_name: "SIGNAL",
+        route: [wire(-5, 0.55), wire(5, 0.55)],
+      },
+    ],
+  }),
 } satisfies Record<string, SimpleRouteJson>;

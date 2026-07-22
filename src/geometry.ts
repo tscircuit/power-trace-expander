@@ -6,6 +6,27 @@ export const WIDTH_EPSILON = 1e-6;
 export const distance = (a: Point, b: Point) =>
   Math.hypot(b.x - a.x, b.y - a.y);
 
+export const distancePointToSegment = (
+  point: Point,
+  start: Point,
+  end: Point,
+) => {
+  const deltaX = end.x - start.x;
+  const deltaY = end.y - start.y;
+  const lengthSquared = deltaX * deltaX + deltaY * deltaY;
+  if (lengthSquared <= 1e-12) return distance(point, start);
+  const t = clamp(
+    ((point.x - start.x) * deltaX + (point.y - start.y) * deltaY) /
+      lengthSquared,
+    0,
+    1,
+  );
+  return Math.hypot(
+    point.x - (start.x + deltaX * t),
+    point.y - (start.y + deltaY * t),
+  );
+};
+
 export const pointsEqual = (a: Point, b: Point, epsilon = 1e-6) =>
   Math.abs(a.x - b.x) <= epsilon && Math.abs(a.y - b.y) <= epsilon;
 
