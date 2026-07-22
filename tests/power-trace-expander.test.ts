@@ -8,6 +8,14 @@ import {
   SpatialObstacleIndex,
 } from "../src";
 
+const testWire = (x: number, y: number, width = 0.15) => ({
+  route_type: "wire" as const,
+  x,
+  y,
+  width,
+  layer: "top" as const,
+});
+
 test("keeps a trace that already meets its nominal width byte-for-byte", () => {
   const input = structuredClone(centralObstacleFixture);
   input.obstacles = [];
@@ -26,9 +34,11 @@ test("keeps a trace that already meets its nominal width byte-for-byte", () => {
 });
 
 test("widens clear intervals and obstacle-reroutes a blocked interval", () => {
-  const solver = new PowerTraceExpanderSolver(
-    structuredClone(centralObstacleFixture),
-  );
+  const input = structuredClone(centralObstacleFixture);
+  // Keep explicit coverage for the original planar obstacle-aware A*. The
+  // dedicated layerChangeWithNecking fixture exercises the multilayer path.
+  input.layerCount = 1;
+  const solver = new PowerTraceExpanderSolver(input);
 
   solver.step();
   expect(solver.solved).toBe(false);
@@ -44,6 +54,7 @@ test("widens clear intervals and obstacle-reroutes a blocked interval", () => {
   expect(solver.expandedSegmentCount).toBeGreaterThan(0);
   expect(solver.reroutedSegmentCount).toBeGreaterThan(0);
   expect(solver.attemptedGridCount).toBeGreaterThan(0);
+  expect(solver.attemptedLayerGridCount).toBe(0);
   expect(wirePoints.every((point) => point.width >= 0.8)).toBe(true);
   expect(wirePoints.some((point) => Math.abs(point.y) > 1)).toBe(true);
 });
@@ -305,6 +316,53 @@ test("allows same-net vias but keeps different-net vias as obstacles", () => {
   expect(index.collides({ ...query, connectionNames: ["OTHER"] })).toBe(true);
 });
 
+test("keeps same-net via drills mechanically separated", () => {
+  const input = structuredClone(centralObstacleFixture);
+  input.obstacles = [];
+  input.minViaHoleEdgeToViaHoleEdgeClearance = 0.1;
+  input.traces = [
+    {
+      type: "pcb_trace",
+      pcb_trace_id: "trace_with_via",
+      connection_name: "POWER",
+      route: [
+        {
+          route_type: "via",
+          x: 0,
+          y: 0,
+          from_layer: "top",
+          to_layer: "bottom",
+          via_diameter: 0.6,
+          via_hole_diameter: 0.2,
+        },
+      ],
+    },
+  ];
+  const index = new SpatialObstacleIndex(input, input.traces);
+  const collidesAt = (x: number) =>
+    index.collidesVia({
+      point: { x, y: 0 },
+      layers: ["top", "bottom"],
+      padDiameter: 0.3,
+      holeDiameter: 0.2,
+      connectionNames: ["POWER"],
+    });
+
+  expect(collidesAt(0.29)).toBe(true);
+  expect(collidesAt(0.31)).toBe(false);
+
+  const dynamicIndex = new SpatialObstacleIndex(input, input.traces, 0);
+  expect(
+    dynamicIndex.collidesVia({
+      point: { x: 0.29, y: 0 },
+      layers: ["top", "bottom"],
+      padDiameter: 0.3,
+      holeDiameter: 0.2,
+      connectionNames: ["POWER"],
+    }),
+  ).toBe(true);
+});
+
 test("uses shared port aliases for same-net pads", () => {
   const input = structuredClone(centralObstacleFixture);
   input.traces = [];
@@ -424,6 +482,67 @@ test("uses exact capsule checks after the Flatbush broad phase", () => {
 
   expect(queryAt(0.5)).toBe(false);
   expect(queryAt(0.35)).toBe(true);
+});
+
+test("targeted mode uses aliases, forwards through the autorouter, and measures its own plateau", () => {
+  const input = structuredClone(simplifiedCases.straightClear);
+  input.bounds = { minX: -6, maxX: 6, minY: -5, maxY: 5 };
+  input.connections = [
+    {
+      name: "POWER",
+      source_trace_id: "POWER_SOURCE_ALIAS",
+      nominalTraceWidth: 0.8,
+      pointsToConnect: [
+        { x: -0.005, y: 0, layer: "top" },
+        { x: 0.005, y: 0, layer: "top" },
+      ],
+    },
+    {
+      name: "BACKGROUND",
+      nominalTraceWidth: 0.8,
+      pointsToConnect: [
+        { x: -5, y: 4, layer: "top" },
+        { x: 5, y: 4, layer: "top" },
+      ],
+    },
+  ];
+  input.traces = [
+    {
+      type: "pcb_trace",
+      pcb_trace_id: "selected-power",
+      connection_name: "POWER",
+      route: [testWire(-0.005, 0), testWire(0.005, 0)],
+    },
+    {
+      type: "pcb_trace",
+      pcb_trace_id: "large-background",
+      connection_name: "BACKGROUND",
+      route: [testWire(-5, 4), testWire(5, 4)],
+    },
+  ];
+  const originalBackground = structuredClone(input.traces[1]);
+  const options = { onlyConnectionNames: ["POWER_SOURCE_ALIAS"] };
+  const solver = new PowerTraceExpanderSolver(input, options);
+
+  solver.solve();
+
+  expect(solver.stats.selectedTraceCount).toBe(1);
+  expect(solver.completedPassCount).toBe(2);
+  expect(
+    solver
+      .getOutput()[0]!
+      .route.filter((point) => point.route_type === "wire")
+      .every((point) => point.width === 0.8),
+  ).toBe(true);
+  expect(solver.getOutput()[1]).toEqual(originalBackground);
+
+  const autorouter = new PowerTraceExpanderAutorouter(
+    structuredClone(input),
+    options,
+  );
+  const autorouterOutput = autorouter.solveSync();
+  expect(autorouter.solver.stats.selectedTraceCount).toBe(1);
+  expect(autorouterOutput[1]).toEqual(originalBackground);
 });
 
 test("autorouter adapter emits a tscircuit-compatible complete event", () => {

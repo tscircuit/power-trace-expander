@@ -5,6 +5,7 @@ export {
 } from "./createPowerTraceExpanderAutorouter";
 export { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
 export { LocalTraceInflationSolver } from "./LocalTraceInflationSolver";
+export { LayerAwareGridRouteSolver } from "./LayerAwareGridRouteSolver";
 export { ElasticTracePushSolver } from "./ElasticTracePushSolver";
 export { PowerTraceExpanderSolver } from "./PowerTraceExpanderSolver";
 export { SpatialObstacleIndex } from "./SpatialObstacleIndex";
@@ -21,11 +22,14 @@ export type {
 export type {
   GridRouteOutput,
   GridRouteProblem,
+  LayerGridRouteOutput,
+  LayerGridRouteProblem,
   ElasticTracePushOutput,
   ElasticTracePushProblem,
   InflationCorridorSegment,
   LocalTraceInflationOutput,
   LocalTraceInflationProblem,
   PowerTraceExpanderInput,
+  PowerTraceExpanderOptions,
   PowerTraceExpanderOutput,
 } from "./types";

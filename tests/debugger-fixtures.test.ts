@@ -13,12 +13,18 @@ test("debugger catalog discovers both simple and complex fixtures", async () => 
 
   expect(cosmosConfig.fixtureFileSuffix).toBe("fixture");
   expect(fixturePaths.filter((path) => path.includes("/simple/"))).toHaveLength(
-    5,
+    6,
   );
   expect(
     fixturePaths.filter((path) => path.includes("/complex/")),
-  ).toHaveLength(2);
+  ).toHaveLength(3);
   expect(fixturePaths).toContain(
     "fixtures/complex/rp2040-dual-motor.fixture.tsx",
+  );
+  expect(fixturePaths).toContain(
+    "fixtures/complex/p-motor-a-upper.fixture.tsx",
+  );
+  expect(fixturePaths).toContain(
+    "fixtures/simple/layer-change-with-necking.fixture.tsx",
   );
 });

@@ -8,6 +8,7 @@ import type {
 } from "@tscircuit/core";
 import type { GraphicsObject } from "graphics-debug";
 import { PowerTraceExpanderSolver } from "./PowerTraceExpanderSolver";
+import type { PowerTraceExpanderOptions } from "./types";
 
 type CompatibleSolver = {
   solved: boolean;
@@ -166,8 +167,11 @@ export class SolverAutorouterAdapter<TSolver extends CompatibleSolver>
 }
 
 export class PowerTraceExpanderAutorouter extends SolverAutorouterAdapter<PowerTraceExpanderSolver> {
-  constructor(simpleRouteJson: SimpleRouteJson) {
-    const solver = new PowerTraceExpanderSolver(simpleRouteJson);
+  constructor(
+    simpleRouteJson: SimpleRouteJson,
+    options: PowerTraceExpanderOptions = {},
+  ) {
+    const solver = new PowerTraceExpanderSolver(simpleRouteJson, options);
     super({
       input: simpleRouteJson,
       solver,
@@ -179,4 +183,5 @@ export class PowerTraceExpanderAutorouter extends SolverAutorouterAdapter<PowerT
 
 export const createPowerTraceExpanderAutorouter = async (
   simpleRouteJson: SimpleRouteJson,
-) => new PowerTraceExpanderAutorouter(simpleRouteJson);
+  options: PowerTraceExpanderOptions = {},
+) => new PowerTraceExpanderAutorouter(simpleRouteJson, options);

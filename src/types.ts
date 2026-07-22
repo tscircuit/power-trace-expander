@@ -7,7 +7,19 @@ export type WireRoutePoint = Extract<
   { route_type: "wire" }
 >;
 
+export type ViaRoutePoint = Extract<
+  SimplifiedPcbTrace["route"][number],
+  { route_type: "via" }
+>;
+
+export type CopperRoutePoint = WireRoutePoint | ViaRoutePoint;
+
 export type PowerTraceExpanderInput = SimpleRouteJson;
+
+export type PowerTraceExpanderOptions = {
+  /** Restrict the top-level scan while still allowing nearby traces to move. */
+  onlyConnectionNames?: readonly string[];
+};
 
 export type PowerTraceExpanderOutput = SimplifiedPcbTrace[];
 
@@ -22,6 +34,7 @@ export type IndexedObstacle = {
   traceIndex?: number;
   routeStartIndex?: number;
   routeEndIndex?: number;
+  viaHoleDiameter?: number;
   exactShape?:
     | { type: "segment"; start: Point; end: Point; width: number }
     | { type: "polygon"; points: Point[] }
@@ -35,7 +48,24 @@ export type CollisionQuery = {
   width: number;
   connectionNames: string[];
   ignoreTraceIndex?: number;
+  ignoreTraceIndices?: readonly number[];
   ignoreRouteRange?: { start: number; end: number };
+};
+
+export type ViaCollisionQuery = {
+  point: Point;
+  layers: string[];
+  padDiameter: number;
+  holeDiameter: number;
+  connectionNames: string[];
+  ignoreTraceIndex?: number;
+  ignoreTraceIndices?: readonly number[];
+  otherNewViaPoints?: Point[];
+  fixedVias?: Array<{
+    point: Point;
+    padDiameter: number;
+    holeDiameter: number;
+  }>;
 };
 
 export type InflationCorridorSegment = {
@@ -98,4 +128,45 @@ export type GridRouteOutput = {
   traceWidth: number;
   gridSize: number;
   gridOffset: GridOffset;
+};
+
+export type LayerGridRouteProblem = {
+  start: Point;
+  end: Point;
+  originalStartLayer: string;
+  originalEndLayer: string;
+  startLayers: string[];
+  endLayers: string[];
+  layers: string[];
+  traceWidth: number;
+  startNeckWidth: number;
+  endNeckWidth: number;
+  maxStartNeckLength: number;
+  maxEndNeckLength: number;
+  neckPenaltyExponent: number;
+  viaDiameter: number;
+  viaHoleDiameter: number;
+  minViaCount: number;
+  maxViaCount: number;
+  viaCost: number;
+  gridSize: number;
+  gridOffset: GridOffset;
+  connectionNames: string[];
+  obstacleIndex: import("./SpatialObstacleIndex").SpatialObstacleIndex;
+  ignoreTraceIndex: number;
+  ignoreRouteRange: { start: number; end: number };
+  softTraceIndices: number[];
+  fixedVias: NonNullable<ViaCollisionQuery["fixedVias"]>;
+  bounds: SimpleRouteJson["bounds"];
+  searchPadding: number;
+};
+
+export type LayerGridRouteOutput = {
+  route: CopperRoutePoint[];
+  traceWidth: number;
+  startNeckWidth: number;
+  endNeckWidth: number;
+  gridSize: number;
+  gridOffset: GridOffset;
+  viaCount: number;
 };
