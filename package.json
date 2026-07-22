@@ -17,12 +17,14 @@
   ],
   "scripts": {
     "build": "tsup src/index.ts --dts --format esm",
+    "benchmark:rp2040": "bun scripts/benchmark-rp2040.ts",
+    "analyze:rp2040": "bun scripts/analyze-rp2040-bottlenecks.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "solver:debug": "cosmos",
     "solver:debug:build": "cosmos-export",
     "test": "bun test",
-    "test:update": "bun test -u",
+    "test:update": "BUN_UPDATE_SNAPSHOTS=1 bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

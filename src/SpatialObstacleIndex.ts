@@ -1,20 +1,24 @@
 import type { SimpleRouteJson, SimplifiedPcbTrace } from "@tscircuit/core";
 import Flatbush from "flatbush";
+import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
   approximateObstacleWithRects,
   approximateSegmentWithRects,
+  distancePointToSegment,
+  distanceSegmentToPolygon,
+  distanceSegmentToSegment,
   segmentIntersectsRect,
 } from "./geometry";
 import type { CollisionQuery, IndexedObstacle } from "./types";
 
-const namesOverlap = (a: string[], b: string[]) =>
-  a.some((name) => b.includes(name));
-
 export class SpatialObstacleIndex {
   readonly items: IndexedObstacle[];
   readonly clearance: number;
+  readonly boardEdgeClearance: number;
   readonly bounds: SimpleRouteJson["bounds"];
   private readonly index: Flatbush | null;
+  private readonly connectionNameSets: ReadonlySet<string>[];
+  private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly dynamicTraceIndex?: number;
 
   constructor(
@@ -22,13 +26,20 @@ export class SpatialObstacleIndex {
     traces: SimplifiedPcbTrace[],
     dynamicTraceIndex?: number,
     extraItems: IndexedObstacle[] = [],
+    connectionNameResolver = new ConnectionNameResolver(
+      simpleRouteJson,
+      traces,
+    ),
   ) {
     this.bounds = simpleRouteJson.bounds;
     this.dynamicTraceIndex = dynamicTraceIndex;
     this.clearance = Math.max(
-      simpleRouteJson.defaultObstacleMargin ?? 0.15,
-      simpleRouteJson.minTraceToPadEdgeClearance ?? 0.15,
+      simpleRouteJson.defaultObstacleMargin ?? 0,
+      simpleRouteJson.minTraceToPadEdgeClearance ?? 0,
+      0.1,
     );
+    this.boardEdgeClearance =
+      simpleRouteJson.minBoardEdgeClearance ?? this.clearance;
     this.items = [
       ...simpleRouteJson.obstacles.flatMap((obstacle) =>
         approximateObstacleWithRects(obstacle),
@@ -36,6 +47,11 @@ export class SpatialObstacleIndex {
       ...this.createTraceItems(traces),
       ...extraItems,
     ];
+    this.connectionNameSets = this.items.map(
+      (item) =>
+        new Set(connectionNameResolver.canonicalize(item.connectionNames)),
+    );
+    this.connectionNameResolver = connectionNameResolver;
     this.index = this.items.length > 0 ? new Flatbush(this.items.length) : null;
     for (const item of this.items) {
       this.index!.add(item.minX, item.minY, item.maxX, item.maxY);
@@ -50,8 +66,10 @@ export class SpatialObstacleIndex {
       const trace = traces[traceIndex]!;
       const connectionNames = [
         trace.connection_name,
+        trace.source_trace_id,
         trace.rootConnectionName,
         ...(trace.mergedConnectionNames ?? []),
+        ...(trace.connectsTo ?? []),
       ].filter((name): name is string => Boolean(name));
 
       for (let routeIndex = 0; routeIndex < trace.route.length; routeIndex++) {
@@ -69,6 +87,11 @@ export class SpatialObstacleIndex {
             traceIndex,
             routeStartIndex: routeIndex,
             routeEndIndex: routeIndex,
+            exactShape: {
+              type: "circle",
+              center: { x: point.x, y: point.y },
+              radius: diameter / 2,
+            },
           });
           continue;
         }
@@ -85,7 +108,9 @@ export class SpatialObstacleIndex {
           ...approximateSegmentWithRects({
             start: point,
             end: next,
-            width: Math.max(point.width, next.width),
+            // Circuit JSON and @tscircuit/checks assign each wire segment the
+            // width of its first route point.
+            width: point.width,
             base: {
               layers: [point.layer],
               kind: "trace",
@@ -102,10 +127,31 @@ export class SpatialObstacleIndex {
   }
 
   collides(query: CollisionQuery): boolean {
-    return this.isOutsideBounds(query) || this.findCollisions(query).length > 0;
+    if (this.isOutsideBounds(query)) return true;
+    const { radius, candidates, canonicalConnectionNames } =
+      this.getCollisionCandidates(query);
+    for (const itemIndex of candidates) {
+      if (this.itemCollides(itemIndex, query, radius, canonicalConnectionNames))
+        return true;
+    }
+    return false;
   }
 
   findCollisions(query: CollisionQuery): IndexedObstacle[] {
+    const { radius, candidates, canonicalConnectionNames } =
+      this.getCollisionCandidates(query);
+    const collisions: IndexedObstacle[] = [];
+    for (const itemIndex of candidates) {
+      if (
+        this.itemCollides(itemIndex, query, radius, canonicalConnectionNames)
+      ) {
+        collisions.push(this.items[itemIndex]!);
+      }
+    }
+    return collisions;
+  }
+
+  private getCollisionCandidates(query: CollisionQuery) {
     const radius = query.width / 2 + this.clearance;
     const queryBounds = {
       minX: Math.min(query.start.x, query.end.x) - radius,
@@ -120,45 +166,84 @@ export class SpatialObstacleIndex {
         queryBounds.maxX,
         queryBounds.maxY,
       ) ?? [];
-    const collisions: IndexedObstacle[] = [];
-    for (const itemIndex of candidates) {
-      const item = this.items[itemIndex]!;
-      if (!item.layers.includes(query.layer)) continue;
-      // A route may enter a pad that belongs to its own connection. Separate
-      // trace/via objects still participate in clearance checks even when they
-      // are electrically connected; this matches tscircuit's geometry DRC.
-      if (
-        item.kind === "obstacle" &&
-        namesOverlap(item.connectionNames, query.connectionNames)
-      ) {
-        continue;
-      }
-      if (
-        item.kind === "trace" &&
-        item.traceIndex === query.ignoreTraceIndex &&
-        query.ignoreRouteRange &&
-        (item.routeEndIndex ?? -1) >= query.ignoreRouteRange.start &&
-        (item.routeStartIndex ?? Number.POSITIVE_INFINITY) <=
-          query.ignoreRouteRange.end
-      ) {
-        continue;
-      }
-      if (
-        segmentIntersectsRect(query.start, query.end, {
-          minX: item.minX - radius,
-          minY: item.minY - radius,
-          maxX: item.maxX + radius,
-          maxY: item.maxY + radius,
-        })
-      ) {
-        collisions.push(item);
-      }
+    return {
+      radius,
+      candidates,
+      canonicalConnectionNames: this.connectionNameResolver.canonicalize(
+        query.connectionNames,
+      ),
+    };
+  }
+
+  private itemCollides(
+    itemIndex: number,
+    query: CollisionQuery,
+    radius: number,
+    canonicalConnectionNames: string[],
+  ) {
+    const item = this.items[itemIndex]!;
+    if (!item.layers.includes(query.layer)) return false;
+    // Connected copper is one obstacle-free routing region. This mirrors
+    // @tscircuit/checks, which exempts same-net trace/trace, trace/pad, and
+    // trace/via pairs from clearance errors. Different-net copper continues
+    // to participate in both overlap and margin checks.
+    const itemConnectionNames = this.connectionNameSets[itemIndex]!;
+    if (
+      canonicalConnectionNames.some((name) => itemConnectionNames.has(name))
+    ) {
+      return false;
     }
-    return collisions;
+    if (
+      item.kind === "trace" &&
+      item.traceIndex === query.ignoreTraceIndex &&
+      query.ignoreRouteRange &&
+      (item.routeEndIndex ?? -1) >= query.ignoreRouteRange.start &&
+      (item.routeStartIndex ?? Number.POSITIVE_INFINITY) <=
+        query.ignoreRouteRange.end
+    ) {
+      return false;
+    }
+    if (item.exactShape?.type === "segment") {
+      return (
+        distanceSegmentToSegment(
+          query.start,
+          query.end,
+          item.exactShape.start,
+          item.exactShape.end,
+        ) <=
+        radius + item.exactShape.width / 2 + 1e-9
+      );
+    }
+    if (item.exactShape?.type === "polygon") {
+      return (
+        distanceSegmentToPolygon(
+          query.start,
+          query.end,
+          item.exactShape.points,
+        ) <=
+        radius + 1e-9
+      );
+    }
+    if (item.exactShape?.type === "circle") {
+      return (
+        distancePointToSegment(
+          item.exactShape.center,
+          query.start,
+          query.end,
+        ) <=
+        radius + item.exactShape.radius + 1e-9
+      );
+    }
+    return segmentIntersectsRect(query.start, query.end, {
+      minX: item.minX - radius,
+      minY: item.minY - radius,
+      maxX: item.maxX + radius,
+      maxY: item.maxY + radius,
+    });
   }
 
   private isOutsideBounds(query: CollisionQuery) {
-    const radius = query.width / 2 + this.clearance;
+    const radius = query.width / 2 + this.boardEdgeClearance;
     return (
       Math.min(query.start.x, query.end.x) - radius < this.bounds.minX ||
       Math.max(query.start.x, query.end.x) + radius > this.bounds.maxX ||

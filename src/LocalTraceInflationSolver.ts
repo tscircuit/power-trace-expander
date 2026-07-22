@@ -4,6 +4,8 @@ import type {
 } from "@tscircuit/core";
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
+import { ConnectionNameResolver } from "./ConnectionNameResolver";
+import { ElasticTracePushSolver } from "./ElasticTracePushSolver";
 import {
   approximateSegmentWithRects,
   clamp,
@@ -16,6 +18,7 @@ import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
   GridOffset,
   GridRouteOutput,
+  ElasticTracePushOutput,
   IndexedObstacle,
   InflationCorridorSegment,
   LocalTraceInflationOutput,
@@ -26,6 +29,7 @@ import type {
 type InflationPhase =
   | "scan-corridor"
   | "select-blocker"
+  | "try-elastic-push"
   | "try-grid-candidate"
   | "complete";
 
@@ -64,25 +68,39 @@ export class LocalTraceInflationSolver extends BaseSolver {
   attemptedGridCount = 0;
 
   private readonly blockerIndex: SpatialObstacleIndex;
+  private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly blockersByTrace = new Map<number, BlockingTrace>();
   private blockers: BlockingTrace[] = [];
   private currentBlocker: BlockingTrace | null = null;
   private currentRange: { startIndex: number; endIndex: number } | null = null;
   private currentTraceWidth = 0;
   private gridResolutions: number[] = [];
+  private currentObstacleIndex: SpatialObstacleIndex | null = null;
   private output: LocalTraceInflationOutput | null = null;
 
-  declare activeSubSolver: ObstacleAwareGridRouteSolver | null;
+  declare activeSubSolver:
+    | ObstacleAwareGridRouteSolver
+    | ElasticTracePushSolver
+    | null;
 
-  constructor(inputProblem: LocalTraceInflationProblem) {
+  constructor(
+    inputProblem: LocalTraceInflationProblem,
+    connectionNameResolver = new ConnectionNameResolver(
+      inputProblem.simpleRouteJson,
+      inputProblem.traces,
+    ),
+  ) {
     super();
     this.inputProblem = structuredClone(inputProblem);
     this.traces = structuredClone(inputProblem.traces);
     this.corridor = structuredClone(inputProblem.corridor);
+    this.connectionNameResolver = connectionNameResolver;
     this.blockerIndex = new SpatialObstacleIndex(
       this.inputProblem.simpleRouteJson,
       this.traces,
       inputProblem.powerTraceIndex,
+      [],
+      this.connectionNameResolver,
     );
     this.activeSubSolver = null;
     this.MAX_ITERATIONS = 25_000;
@@ -95,7 +113,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
 
   override _step() {
     if (this.activeSubSolver) {
-      this.stepGridSolver();
+      this.stepActiveSubSolver();
       this.stats = this.createStats();
       return;
     }
@@ -106,6 +124,9 @@ export class LocalTraceInflationSolver extends BaseSolver {
         break;
       case "select-blocker":
         this.selectNextBlocker();
+        break;
+      case "try-elastic-push":
+        // The elastic solver is stepped before the phase switch.
         break;
       case "try-grid-candidate":
         this.startNextGridCandidate();
@@ -204,7 +225,23 @@ export class LocalTraceInflationSolver extends BaseSolver {
     this.gridResolutions = this.getGridResolutions(this.currentTraceWidth);
     this.resolutionCursor = 0;
     this.offsetCursor = 0;
-    this.phase = "try-grid-candidate";
+    this.currentObstacleIndex = new SpatialObstacleIndex(
+      this.inputProblem.simpleRouteJson,
+      this.traces,
+      this.currentBlocker.traceIndex,
+      this.createInflatedCorridorItems(),
+      this.connectionNameResolver,
+    );
+    this.activeSubSolver = new ElasticTracePushSolver({
+      trace,
+      range,
+      layer: (trace.route[range.startIndex] as WireRoutePoint).layer,
+      traceWidth: this.currentTraceWidth,
+      corridor: this.corridor,
+      obstacleIndex: this.currentObstacleIndex,
+      connectionNames: this.getTraceConnectionNames(trace),
+    });
+    this.phase = "try-elastic-push";
   }
 
   private findStableAnchorRange(blocker: BlockingTrace) {
@@ -287,12 +324,12 @@ export class LocalTraceInflationSolver extends BaseSolver {
 
     const gridSize = this.gridResolutions[this.resolutionCursor]!;
     const normalizedOffset = GRID_OFFSETS[this.offsetCursor]!;
-    const obstacleIndex = new SpatialObstacleIndex(
-      this.inputProblem.simpleRouteJson,
-      this.traces,
-      this.currentBlocker.traceIndex,
-      this.createInflatedCorridorItems(),
-    );
+    const obstacleIndex = this.currentObstacleIndex;
+    if (!obstacleIndex) {
+      this.blockerCursor++;
+      this.phase = "select-blocker";
+      return;
+    }
     this.attemptedGridCount++;
     this.activeSubSolver = new ObstacleAwareGridRouteSolver({
       start,
@@ -316,7 +353,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
     });
   }
 
-  private stepGridSolver() {
+  private stepActiveSubSolver() {
     const solver = this.activeSubSolver!;
     solver.step();
     if (!solver.solved && !solver.failed) return;
@@ -324,7 +361,10 @@ export class LocalTraceInflationSolver extends BaseSolver {
     if (solver.solved) {
       const output = solver.getOutput();
       if (output) {
-        this.applyGridRoute(output);
+        this.applyRoute(
+          output,
+          solver instanceof ElasticTracePushSolver ? "elastic" : "grid",
+        );
         this.activeSubSolver = null;
         this.phase = "complete";
         return;
@@ -334,10 +374,17 @@ export class LocalTraceInflationSolver extends BaseSolver {
     this.failedSubSolvers ??= [];
     this.failedSubSolvers.push(solver);
     this.activeSubSolver = null;
+    if (solver instanceof ElasticTracePushSolver) {
+      this.phase = "try-grid-candidate";
+      return;
+    }
     this.offsetCursor++;
   }
 
-  private applyGridRoute(output: GridRouteOutput) {
+  private applyRoute(
+    output: GridRouteOutput | ElasticTracePushOutput,
+    strategy: "elastic" | "grid",
+  ) {
     const blocker = this.currentBlocker!;
     const range = this.currentRange!;
     const trace = this.traces[blocker.traceIndex]!;
@@ -367,6 +414,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
       traces: this.traces,
       pushedTraceIndex: blocker.traceIndex,
       replacedRange: range,
+      strategy,
     };
   }
 

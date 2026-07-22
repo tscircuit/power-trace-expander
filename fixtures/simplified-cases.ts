@@ -97,6 +97,29 @@ export const simplifiedCases = {
     ],
   }),
 
+  intermediateWidthChannel: createBaseFixture({
+    obstacles: [
+      {
+        type: "rect",
+        obstacleId: "intermediate-upper-wall",
+        center: { x: 0, y: 2 },
+        width: 11.8,
+        height: 3.1,
+        layers: ["top"],
+        connectedTo: [],
+      },
+      {
+        type: "rect",
+        obstacleId: "intermediate-lower-wall",
+        center: { x: 0, y: -2 },
+        width: 11.8,
+        height: 3.1,
+        layers: ["top"],
+        connectedTo: [],
+      },
+    ],
+  }),
+
   longDetour: createBaseFixture({
     obstacles: [
       {

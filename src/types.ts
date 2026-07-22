@@ -22,6 +22,10 @@ export type IndexedObstacle = {
   traceIndex?: number;
   routeStartIndex?: number;
   routeEndIndex?: number;
+  exactShape?:
+    | { type: "segment"; start: Point; end: Point; width: number }
+    | { type: "polygon"; points: Point[] }
+    | { type: "circle"; center: Point; radius: number };
 };
 
 export type CollisionQuery = {
@@ -54,6 +58,22 @@ export type LocalTraceInflationOutput = {
   traces: SimplifiedPcbTrace[];
   pushedTraceIndex: number;
   replacedRange: { startIndex: number; endIndex: number };
+  strategy: "elastic" | "grid";
+};
+
+export type ElasticTracePushProblem = {
+  trace: SimplifiedPcbTrace;
+  range: { startIndex: number; endIndex: number };
+  layer: string;
+  traceWidth: number;
+  corridor: InflationCorridorSegment[];
+  obstacleIndex: import("./SpatialObstacleIndex").SpatialObstacleIndex;
+  connectionNames: string[];
+};
+
+export type ElasticTracePushOutput = {
+  points: Point[];
+  traceWidth: number;
 };
 
 export type GridOffset = { x: number; y: number };

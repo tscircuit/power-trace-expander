@@ -33,6 +33,89 @@ export const pointsEqual = (a: Point, b: Point, epsilon = 1e-6) =>
 export const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 
+const orientation = (a: Point, b: Point, c: Point) =>
+  (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+
+const pointOnSegment = (point: Point, start: Point, end: Point) =>
+  Math.abs(orientation(start, end, point)) <= 1e-9 &&
+  point.x >= Math.min(start.x, end.x) - 1e-9 &&
+  point.x <= Math.max(start.x, end.x) + 1e-9 &&
+  point.y >= Math.min(start.y, end.y) - 1e-9 &&
+  point.y <= Math.max(start.y, end.y) + 1e-9;
+
+export const segmentsIntersect = (
+  aStart: Point,
+  aEnd: Point,
+  bStart: Point,
+  bEnd: Point,
+) => {
+  const o1 = orientation(aStart, aEnd, bStart);
+  const o2 = orientation(aStart, aEnd, bEnd);
+  const o3 = orientation(bStart, bEnd, aStart);
+  const o4 = orientation(bStart, bEnd, aEnd);
+  if (o1 * o2 < 0 && o3 * o4 < 0) return true;
+  return (
+    (Math.abs(o1) <= 1e-9 && pointOnSegment(bStart, aStart, aEnd)) ||
+    (Math.abs(o2) <= 1e-9 && pointOnSegment(bEnd, aStart, aEnd)) ||
+    (Math.abs(o3) <= 1e-9 && pointOnSegment(aStart, bStart, bEnd)) ||
+    (Math.abs(o4) <= 1e-9 && pointOnSegment(aEnd, bStart, bEnd))
+  );
+};
+
+export const distanceSegmentToSegment = (
+  aStart: Point,
+  aEnd: Point,
+  bStart: Point,
+  bEnd: Point,
+) => {
+  if (segmentsIntersect(aStart, aEnd, bStart, bEnd)) return 0;
+  return Math.min(
+    distancePointToSegment(aStart, bStart, bEnd),
+    distancePointToSegment(aEnd, bStart, bEnd),
+    distancePointToSegment(bStart, aStart, aEnd),
+    distancePointToSegment(bEnd, aStart, aEnd),
+  );
+};
+
+const pointInPolygon = (point: Point, polygon: Point[]) => {
+  let inside = false;
+  for (
+    let index = 0, previousIndex = polygon.length - 1;
+    index < polygon.length;
+    previousIndex = index++
+  ) {
+    const current = polygon[index]!;
+    const previous = polygon[previousIndex]!;
+    if (pointOnSegment(point, previous, current)) return true;
+    const crosses =
+      current.y > point.y !== previous.y > point.y &&
+      point.x <
+        ((previous.x - current.x) * (point.y - current.y)) /
+          (previous.y - current.y) +
+          current.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+};
+
+export const distanceSegmentToPolygon = (
+  start: Point,
+  end: Point,
+  polygon: Point[],
+) => {
+  if (pointInPolygon(start, polygon) || pointInPolygon(end, polygon)) return 0;
+  let minimumDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < polygon.length; index++) {
+    const edgeStart = polygon[index]!;
+    const edgeEnd = polygon[(index + 1) % polygon.length]!;
+    minimumDistance = Math.min(
+      minimumDistance,
+      distanceSegmentToSegment(start, end, edgeStart, edgeEnd),
+    );
+  }
+  return minimumDistance;
+};
+
 export const getApproximationChunkLength = (width: number) =>
   clamp(width * 1.25, 0.25, 0.75);
 
@@ -95,6 +178,12 @@ export function approximateSegmentWithRects({
       minY: Math.min(y0, y1) - radius,
       maxX: Math.max(x0, x1) + radius,
       maxY: Math.max(y0, y1) + radius,
+      exactShape: {
+        type: "segment",
+        start: { x: x0, y: y0 },
+        end: { x: x1, y: y1 },
+        width,
+      },
     });
   }
 
@@ -146,6 +235,7 @@ export function approximateObstacleWithRects(
         layers: obstacle.layers,
         kind: "obstacle",
         connectionNames: obstacle.connectedTo,
+        exactShape: { type: "polygon", points: corners },
       });
     }
   }
