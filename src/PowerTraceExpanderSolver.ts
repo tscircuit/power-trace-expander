@@ -14,6 +14,7 @@ import {
 import { LayerAwareGridRouteSolver } from "./LayerAwareGridRouteSolver";
 import { LocalTraceInflationSolver } from "./LocalTraceInflationSolver";
 import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
+import { PowerTraceCleanupSolver } from "./PowerTraceCleanupSolver";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
   GridOffset,
@@ -33,6 +34,7 @@ type SolverPhase =
   | "try-trace-inflation"
   | "try-layer-candidate"
   | "try-grid-candidate"
+  | "cleanup"
   | "complete";
 
 type RouteInterval = { startIndex: number; endIndex: number };
@@ -121,6 +123,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   layerReroutedTraceCount = 0;
   insertedViaCount = 0;
   neckedLayerSegmentCount = 0;
+  removedViaPairCount = 0;
+  removedViaCount = 0;
+  simplifiedPathCount = 0;
+  normalizedSegmentCount = 0;
+  cleanupClearanceShoveCount = 0;
 
   private readonly inflationAttemptsBySegment = new Map<string, number>();
   private readonly layerAttemptCountByTrace = new Map<number, number>();
@@ -135,6 +142,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     | ObstacleAwareGridRouteSolver
     | LayerAwareGridRouteSolver
     | LocalTraceInflationSolver
+    | PowerTraceCleanupSolver
     | null;
 
   constructor(
@@ -221,6 +229,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       case "try-grid-candidate":
         this.startNextGridCandidate();
         break;
+      case "cleanup":
+        // The active cleanup solver is stepped before the phase switch.
+        break;
       case "complete":
         this.solved = true;
         break;
@@ -292,7 +303,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     }
 
     this.traceIndex = this.traces.length;
-    this.phase = "complete";
+    this.phase = "cleanup";
+    this.activeSubSolver = new PowerTraceCleanupSolver({
+      simpleRouteJson: this.inputProblem,
+      traces: this.traces,
+      traceIndices: this.traceOrder,
+      maxRerouteLength: 10,
+    });
   }
 
   private calculateWidthDeficit() {
@@ -793,6 +810,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private stepActiveGridSolver() {
+    if (this.activeSubSolver instanceof PowerTraceCleanupSolver) {
+      this.stepActiveCleanupSolver();
+      return;
+    }
     if (this.activeSubSolver instanceof LocalTraceInflationSolver) {
       this.stepActiveInflationSolver();
       return;
@@ -822,6 +843,33 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.failedSubSolvers.push(solver);
     this.activeSubSolver = null;
     this.offsetCursor++;
+  }
+
+  private stepActiveCleanupSolver() {
+    const solver = this.activeSubSolver as PowerTraceCleanupSolver;
+    solver.step();
+    if (!solver.solved && !solver.failed) return;
+
+    if (solver.solved) {
+      this.traces = solver.getOutput();
+      const stats = solver.stats as Record<string, unknown>;
+      this.removedViaPairCount = Number(stats.viaPairCountRemoved ?? 0);
+      this.removedViaCount = Number(stats.viaCountRemoved ?? 0);
+      this.simplifiedPathCount = Number(stats.simplifiedPathCount ?? 0);
+      this.normalizedSegmentCount = Number(stats.normalizedSegmentCount ?? 0);
+      this.cleanupClearanceShoveCount = Number(
+        stats.committedClearanceShoveCount ?? 0,
+      );
+      this.activeSubSolver = null;
+      this.phase = "complete";
+      this.rebuildObstacleIndex();
+      return;
+    }
+
+    this.failedSubSolvers ??= [];
+    this.failedSubSolvers.push(solver);
+    this.activeSubSolver = null;
+    this.phase = "complete";
   }
 
   private stepActiveLayerSolver() {
@@ -1926,6 +1974,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       layerReroutedTraceCount: this.layerReroutedTraceCount,
       insertedViaCount: this.insertedViaCount,
       neckedLayerSegmentCount: this.neckedLayerSegmentCount,
+      removedViaPairCount: this.removedViaPairCount,
+      removedViaCount: this.removedViaCount,
+      simplifiedPathCount: this.simplifiedPathCount,
+      normalizedSegmentCount: this.normalizedSegmentCount,
+      cleanupClearanceShoveCount: this.cleanupClearanceShoveCount,
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }

@@ -23,6 +23,17 @@ export type PowerTraceExpanderOptions = {
 
 export type PowerTraceExpanderOutput = SimplifiedPcbTrace[];
 
+export type PowerTraceCleanupProblem = {
+  simpleRouteJson: SimpleRouteJson;
+  traces: SimplifiedPcbTrace[];
+  /** Restrict cleanup to these traces while retaining all traces as obstacles. */
+  traceIndices?: readonly number[];
+  maxRerouteLength?: number;
+  clearancePaddingTiers?: readonly number[];
+};
+
+export type PowerTraceCleanupOutput = SimplifiedPcbTrace[];
+
 export type IndexedObstacle = {
   minX: number;
   minY: number;
@@ -80,6 +91,8 @@ export type LocalTraceInflationProblem = {
   traces: SimplifiedPcbTrace[];
   powerTraceIndex: number;
   nominalPowerWidth: number;
+  /** Do not shove traces at or above this electrical nominal width. */
+  pushOnlyNominalWidthsBelow?: number;
   corridor: InflationCorridorSegment[];
   maxRerouteLength?: number;
 };
@@ -121,6 +134,8 @@ export type GridRouteProblem = {
   ignoreRouteRange: { start: number; end: number };
   bounds: SimpleRouteJson["bounds"];
   searchPadding: number;
+  /** Keep the reconstructed route on 0/45/90-degree headings. */
+  requireOctilinear?: boolean;
 };
 
 export type GridRouteOutput = {

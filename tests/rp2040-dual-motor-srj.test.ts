@@ -4,6 +4,7 @@ import "graphics-debug/matcher";
 import type { SimpleRouteJson } from "@tscircuit/core";
 import rp2040DualMotorProblem from "../fixtures/rp2040-dual-motor/input.json";
 import { PowerTraceExpanderSolver } from "../src";
+import { countNonOctilinearSegments } from "../src/octilinear";
 import { UPPER_P_MOTOR_A_CONNECTION } from "../fixtures/rp2040-dual-motor/create-upper-p-motor-a-problem";
 import { getTraceWidthMetrics } from "./helpers/getTraceWidthMetrics";
 
@@ -103,6 +104,48 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(solver.attemptedLayerGridCount).toBeLessThan(60);
   expect(solver.layerReroutedTraceCount).toBeGreaterThan(0);
   expect(solver.insertedViaCount).toBeGreaterThan(0);
+  expect(solver.removedViaPairCount).toBeGreaterThanOrEqual(7);
+  expect(solver.removedViaCount).toBeGreaterThanOrEqual(14);
+  expect(solver.simplifiedPathCount).toBeGreaterThan(60);
+  expect(solver.normalizedSegmentCount).toBeGreaterThan(80);
+  expect(solver.cleanupClearanceShoveCount).toBeGreaterThan(0);
+  const remainingNonOctilinearPowerSegments = solver
+    .getOutput()
+    .filter((trace) => {
+      const connection = problem.connections.find((candidate) =>
+        [
+          candidate.name,
+          candidate.source_trace_id,
+          candidate.rootConnectionName,
+          ...(candidate.mergedConnectionNames ?? []),
+        ]
+          .filter(Boolean)
+          .some((name) =>
+            [
+              trace.connection_name,
+              trace.source_trace_id,
+              trace.rootConnectionName,
+              ...(trace.mergedConnectionNames ?? []),
+            ].includes(name as string),
+          ),
+      );
+      return (connection?.nominalTraceWidth ?? connection?.width ?? 0) >= 0.5;
+    })
+    .reduce((count, trace) => {
+      for (let index = 0; index < trace.route.length - 1; index++) {
+        const start = trace.route[index];
+        const end = trace.route[index + 1];
+        if (
+          start?.route_type === "wire" &&
+          end?.route_type === "wire" &&
+          start.layer === end.layer
+        ) {
+          count += countNonOctilinearSegments([start, end]);
+        }
+      }
+      return count;
+    }, 0);
+  expect(remainingNonOctilinearPowerSegments).toBeLessThan(55);
   expect(
     upperMotorATrace.route.filter((point) => point.route_type === "via"),
   ).toHaveLength(2);

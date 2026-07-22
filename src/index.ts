@@ -8,6 +8,7 @@ export { LocalTraceInflationSolver } from "./LocalTraceInflationSolver";
 export { LayerAwareGridRouteSolver } from "./LayerAwareGridRouteSolver";
 export { ElasticTracePushSolver } from "./ElasticTracePushSolver";
 export { PowerTraceExpanderSolver } from "./PowerTraceExpanderSolver";
+export { PowerTraceCleanupSolver } from "./PowerTraceCleanupSolver";
 export { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 export { ConnectionNameResolver } from "./ConnectionNameResolver";
 export {
@@ -32,4 +33,6 @@ export type {
   PowerTraceExpanderInput,
   PowerTraceExpanderOptions,
   PowerTraceExpanderOutput,
+  PowerTraceCleanupProblem,
+  PowerTraceCleanupOutput,
 } from "./types";

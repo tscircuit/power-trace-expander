@@ -94,12 +94,16 @@ The committed SVG suite covers:
 - a straight power trace elastically pushing a neighboring signal trace
 - a top-layer wall crossing that requires two vias, nominal bottom copper, and
   localized endpoint necks
+- redundant same-layer via-pair removal using compact shortcuts or a bounded
+  obstacle-aware octilinear search
+- 0/45/90-degree power-path simplification with transactional 0.10/0.05 mm
+  clearance shoves of lower-width neighboring traces
 - same-net trace, via, pad, and imported-subcircuit alias handling, including
   same-net drill-spacing enforcement
 - an isolated upper `P_MOTOR_A` solve with the complete board context retained
 - the captured RP2040 Dual Motor SRJ production problem
 
-On the production fixture, a representative local run completes in about 7.3
+On the production fixture, a representative local run completes in about 10.7
 seconds. It stops after three passes when the final pass adds only 0.0025% of the
 nominal copper area, below the 0.1% plateau threshold. The 1 mm routes improve
 as follows using Circuit JSON's physical first-route-point segment-width
@@ -107,17 +111,19 @@ semantics:
 
 | Metric | Before | After |
 | --- | ---: | ---: |
-| Full-width coverage | 1.27% | 86.58% |
-| At least 0.5 mm coverage | 18.13% | 93.40% |
-| Length-weighted average width | 0.232 mm | 0.939 mm |
+| Full-width coverage | 1.27% | 88.07% |
+| At least 0.5 mm coverage | 18.13% | 93.38% |
+| Length-weighted average width | 0.232 mm | 0.943 mm |
 | 5th percentile width | 0.150 mm | 0.375 mm |
-| 10th percentile width | 0.150 mm | 0.750 mm |
-| Normalized width deficit | 76.76% | 6.05% |
+| 10th percentile width | 0.150 mm | 0.775 mm |
+| Normalized width deficit | 76.76% | 5.74% |
 
-The stricter endpoint-minimum lower bound reports 85.41% full-width coverage, a
-0.936 mm average, and a 6.44% normalized deficit. The 0.25 mm logic-route
+The stricter endpoint-minimum lower bound reports 86.84% full-width coverage, a
+0.939 mm average, and a 6.13% normalized deficit. The cleanup removes seven
+redundant via pairs (14 vias), converts 84 arbitrary-angle segments to
+0/45/90-degree geometry, and commits six extra-clearance shoves. The 0.25 mm logic-route
 full-width coverage rises from 41.12% to 99.38%, while 1 mm route length grows
-by 7.83%. A representative run uses about 1.03M solver steps, 8,121 planar-grid
+by 7.90%. A representative run uses about 1.05M solver steps, 8,121 planar-grid
 attempts, and 47 layer-grid attempts. The production regression caps wall time,
 iterations, and both grid counters so a quality gain cannot hide a major
 performance regression.
@@ -141,8 +147,10 @@ bun run solver:debug
 
 The Cosmos debugger uses `GenericSolverDebugger` from
 `@tscircuit/solver-utils`; scans, width checks, candidate setup, and individual
-A* planar/via expansions can all be stepped independently. The deployed catalog
-contains six **Simple** cases, including layer-change necking, and three
+A* planar/via expansions, cleanup candidates, and individual clearance shoves
+can all be stepped independently. The deployed catalog contains nine **Simple**
+cases, including layer-change necking, redundant-via removal, an obstacle-aware
+via-pair detour, and clearance-shove simplification, plus three
 **Complex** cases: narrow-channel retreat, isolated upper `P_MOTOR_A`, and the
 full RP2040 Dual Motor SRJ. Completed views use green/red for nominal/under-width
 top copper, blue/purple for bottom copper, orange for the active segment, and
