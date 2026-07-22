@@ -370,6 +370,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
           width,
           nominalWidth,
           end.width,
+          start.width,
         );
         if (
           candidateQuality.deficitArea >
@@ -603,14 +604,18 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     const trace = this.traces[candidate.traceIndex]!;
     const originalStart = trace.route[candidate.startIndex];
     const originalEnd = trace.route[candidate.endIndex];
-    let width = candidate.width;
-    if (segmentIndex === 0 && isWire(originalStart)) {
-      width = Math.max(width, originalStart.width);
-    }
-    if (segmentIndex === candidate.points.length - 2 && isWire(originalEnd)) {
-      width = Math.max(width, originalEnd.width);
-    }
-    return width;
+    const startWidth =
+      segmentIndex === 0 && isWire(originalStart)
+        ? originalStart.width
+        : candidate.width;
+    const endWidth =
+      segmentIndex === candidate.points.length - 2 && isWire(originalEnd)
+        ? originalEnd.width
+        : candidate.width;
+    // Core may reverse a route while associating it with its source trace.
+    // Validate the larger endpoint width so clearance is independent of that
+    // serialization direction.
+    return Math.max(startWidth, endWidth);
   }
 
   private stepActiveShoveSolver() {
@@ -672,9 +677,11 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         y: point.y,
         layer: candidate.layer,
         width:
-          index === candidate.points.length - 1
-            ? originalEnd.width
-            : candidate.width,
+          index === 0
+            ? originalStart.width
+            : index === candidate.points.length - 1
+              ? originalEnd.width
+              : candidate.width,
       }),
     );
     const removedRoute = trace.route.slice(
@@ -835,6 +842,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
           output.traceWidth,
           nominalWidth,
           (trace.route[attempt.endIndex] as WireRoutePoint).width,
+          (trace.route[attempt.startIndex] as WireRoutePoint).width,
         );
         if (
           quality.nonOctilinearSegmentCount === 0 &&
@@ -930,25 +938,32 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     width: number,
     nominalWidth: number,
     endWidth = width,
+    startWidth = width,
   ): RouteQuality {
     const length = getPathLength(points);
+    let deficitArea = 0;
     let conservativeDeficitArea = 0;
     let nominalLength = 0;
     let conservativeNominalLength = 0;
     for (let index = 0; index < points.length - 1; index++) {
       const segmentLength = distance(points[index]!, points[index + 1]!);
-      const segmentWidth =
-        index === points.length - 2 ? Math.min(width, endWidth) : width;
+      const segmentStartWidth = index === 0 ? startWidth : width;
+      const segmentEndWidth = index === points.length - 2 ? endWidth : width;
+      const segmentWidth = Math.min(segmentStartWidth, segmentEndWidth);
+      deficitArea +=
+        segmentLength * Math.max(0, nominalWidth - segmentStartWidth);
       conservativeDeficitArea +=
         segmentLength * Math.max(0, nominalWidth - segmentWidth);
-      if (width >= nominalWidth - WIDTH_EPSILON) nominalLength += segmentLength;
+      if (segmentStartWidth >= nominalWidth - WIDTH_EPSILON) {
+        nominalLength += segmentLength;
+      }
       if (segmentWidth >= nominalWidth - WIDTH_EPSILON) {
         conservativeNominalLength += segmentLength;
       }
     }
     return {
       length,
-      deficitArea: length * Math.max(0, nominalWidth - width),
+      deficitArea,
       conservativeDeficitArea,
       nominalLength,
       conservativeNominalLength,

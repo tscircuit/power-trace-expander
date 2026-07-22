@@ -39,6 +39,19 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   const upperMotorATrace = solver
     .getOutput()
     .find((trace) => trace.connection_name === UPPER_P_MOTOR_A_CONNECTION)!;
+  const usbVbusTransitionTrace = solver
+    .getOutput()
+    .find(
+      (trace) =>
+        trace.connection_name === "source_trace_109" &&
+        trace.pcb_trace_id.endsWith("_mst4_0"),
+    );
+  const reversibleUsbBoundary = usbVbusTransitionTrace?.route.find(
+    (point) =>
+      point.route_type === "wire" &&
+      Math.abs(point.x - 29.399811762347507) < 1e-6 &&
+      Math.abs(point.y - 30.091158626533893) < 1e-6,
+  );
   let upperMotorALength = 0;
   let upperMotorANominalLength = 0;
   let upperMotorAWidthArea = 0;
@@ -104,11 +117,19 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(solver.attemptedLayerGridCount).toBeLessThan(60);
   expect(solver.layerReroutedTraceCount).toBeGreaterThan(0);
   expect(solver.insertedViaCount).toBeGreaterThan(0);
-  expect(solver.removedViaPairCount).toBeGreaterThanOrEqual(7);
-  expect(solver.removedViaCount).toBeGreaterThanOrEqual(14);
-  expect(solver.simplifiedPathCount).toBeGreaterThan(60);
-  expect(solver.normalizedSegmentCount).toBeGreaterThan(80);
+  expect(solver.removedViaPairCount).toBeGreaterThanOrEqual(6);
+  expect(solver.removedViaCount).toBeGreaterThanOrEqual(12);
+  expect(solver.simplifiedPathCount).toBeGreaterThan(55);
+  expect(solver.normalizedSegmentCount).toBeGreaterThanOrEqual(80);
   expect(solver.cleanupClearanceShoveCount).toBeGreaterThan(0);
+  // Core may reverse this route when it maps the solver result back to the
+  // source trace. Cleanup must preserve the narrow boundary width so the
+  // reversed segment cannot become a 1 mm USB fanout collision.
+  expect(
+    reversibleUsbBoundary?.route_type === "wire"
+      ? reversibleUsbBoundary.width
+      : undefined,
+  ).toBe(0.375);
   const remainingNonOctilinearPowerSegments = solver
     .getOutput()
     .filter((trace) => {

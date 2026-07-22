@@ -111,19 +111,19 @@ semantics:
 
 | Metric | Before | After |
 | --- | ---: | ---: |
-| Full-width coverage | 1.27% | 88.07% |
-| At least 0.5 mm coverage | 18.13% | 93.38% |
-| Length-weighted average width | 0.232 mm | 0.943 mm |
+| Full-width coverage | 1.27% | 86.92% |
+| At least 0.5 mm coverage | 18.13% | 93.36% |
+| Length-weighted average width | 0.232 mm | 0.940 mm |
 | 5th percentile width | 0.150 mm | 0.375 mm |
-| 10th percentile width | 0.150 mm | 0.775 mm |
-| Normalized width deficit | 76.76% | 5.74% |
+| 10th percentile width | 0.150 mm | 0.750 mm |
+| Normalized width deficit | 76.76% | 5.96% |
 
-The stricter endpoint-minimum lower bound reports 86.84% full-width coverage, a
-0.939 mm average, and a 6.13% normalized deficit. The cleanup removes seven
-redundant via pairs (14 vias), converts 84 arbitrary-angle segments to
+The stricter endpoint-minimum lower bound reports 85.85% full-width coverage, a
+0.937 mm average, and a 6.34% normalized deficit. The cleanup removes six
+redundant via pairs (12 vias), converts 80 arbitrary-angle segments to
 0/45/90-degree geometry, and commits six extra-clearance shoves. The 0.25 mm logic-route
 full-width coverage rises from 41.12% to 99.38%, while 1 mm route length grows
-by 7.90%. A representative run uses about 1.05M solver steps, 8,121 planar-grid
+by 7.89%. A representative run uses about 1.05M solver steps, 8,121 planar-grid
 attempts, and 47 layer-grid attempts. The production regression caps wall time,
 iterations, and both grid counters so a quality gain cannot hide a major
 performance regression.
