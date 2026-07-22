@@ -494,12 +494,13 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     const trace = this.traces[candidate.traceIndex]!;
     const connectionNames = this.getTraceConnectionNames(trace);
     for (let index = 0; index < candidate.points.length - 1; index++) {
+      const segmentWidth = this.getCandidateSegmentWidth(candidate, index);
       if (
         this.obstacleIndex.collides({
           start: candidate.points[index]!,
           end: candidate.points[index + 1]!,
           layer: candidate.layer,
-          width: candidate.width + clearancePadding * 2,
+          width: segmentWidth + clearancePadding * 2,
           connectionNames,
           ignoreTraceIndex: candidate.traceIndex,
           ignoreRouteRange: {
@@ -522,11 +523,12 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     const connectionNames = this.getTraceConnectionNames(trace);
     const pushableTraceIndices = new Set<number>();
     for (let index = 0; index < candidate.points.length - 1; index++) {
+      const segmentWidth = this.getCandidateSegmentWidth(candidate, index);
       const query = {
         start: candidate.points[index]!,
         end: candidate.points[index + 1]!,
         layer: candidate.layer,
-        width: candidate.width + clearancePadding * 2,
+        width: segmentWidth + clearancePadding * 2,
         connectionNames,
         ignoreTraceIndex: candidate.traceIndex,
         ignoreRouteRange: {
@@ -574,7 +576,9 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         start,
         end: candidate.points[index + 1]!,
         layer: candidate.layer,
-        width: corridorWidth,
+        width:
+          this.getCandidateSegmentWidth(candidate, index) +
+          clearancePadding * 2,
       }));
     this.attemptedClearanceShoveCount++;
     this.activeSubSolver = new LocalTraceInflationSolver(
@@ -590,6 +594,23 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.connectionNameResolver,
     );
     this.phase = "shove-clearance";
+  }
+
+  private getCandidateSegmentWidth(
+    candidate: CleanupCandidate,
+    segmentIndex: number,
+  ) {
+    const trace = this.traces[candidate.traceIndex]!;
+    const originalStart = trace.route[candidate.startIndex];
+    const originalEnd = trace.route[candidate.endIndex];
+    let width = candidate.width;
+    if (segmentIndex === 0 && isWire(originalStart)) {
+      width = Math.max(width, originalStart.width);
+    }
+    if (segmentIndex === candidate.points.length - 2 && isWire(originalEnd)) {
+      width = Math.max(width, originalEnd.width);
+    }
+    return width;
   }
 
   private stepActiveShoveSolver() {
