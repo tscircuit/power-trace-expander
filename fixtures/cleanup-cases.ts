@@ -236,4 +236,42 @@ export const cleanupCases = {
     ],
     traces: [powerTrace([wire(-4, 0, 0.8), wire(4, 0, 0.8)])],
   },
+
+  constrainedPadClearance: {
+    ...baseProblem,
+    bounds: { minX: -6, maxX: 6, minY: -1.4, maxY: 1.6 },
+    defaultObstacleMargin: 0.1,
+    minTraceToPadEdgeClearance: 0.1,
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 0.8,
+        pointsToConnect: [
+          { x: -4, y: 0, layer: "top" },
+          { x: 4, y: 0, layer: "top" },
+        ],
+      },
+    ],
+    obstacles: [
+      {
+        type: "rect",
+        obstacleId: "pcb_smtpad_unrelated",
+        center: { x: 0, y: 0.8 },
+        width: 1.2,
+        height: 0.6,
+        layers: ["top"],
+        connectedTo: ["pcb_smtpad_unrelated", "SIGNAL"],
+      },
+      {
+        type: "rect",
+        obstacleId: "lower-keepout",
+        center: { x: 0, y: -1 },
+        width: 4,
+        height: 0.6,
+        layers: ["top"],
+        connectedTo: ["lower-keepout"],
+      },
+    ],
+    traces: [powerTrace([wire(-4, 0, 0.8), wire(4, 0, 0.8)])],
+  },
 } satisfies Record<string, SimpleRouteJson>;

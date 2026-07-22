@@ -67,6 +67,13 @@ less than 0.1% of the total nominal copper area, with a four-pass hard cap.
 This lets displaced traces unlock later improvements without turning a
 post-route repair into an unbounded global reroute.
 
+After width expansion, a dedicated pad-clearance pass moves power copper away
+from unrelated pads toward half of that trace's nominal width. It tries the
+full target first, then descending 0.025–0.05 mm tiers so a dense escape keeps
+the largest improvement that fits instead of failing all-or-nothing. A separate
+final pass converts the clearance-improved route to 0/45/90-degree segments
+while preserving the clearance each local interval achieved.
+
 For focused debugging, `onlyConnectionNames` restricts the top-level scan while
 retaining the complete board as fixed or pushable context:
 
@@ -98,33 +105,38 @@ The committed SVG suite covers:
   obstacle-aware octilinear search
 - 0/45/90-degree power-path simplification with transactional 0.10/0.05 mm
   clearance shoves of lower-width neighboring traces
+- half-trace-width pad clearance, including a constrained case that can retain
+  only an intermediate clearance tier before 0/45/90 simplification
 - same-net trace, via, pad, and imported-subcircuit alias handling, including
   same-net drill-spacing enforcement
 - an isolated upper `P_MOTOR_A` solve with the complete board context retained
 - the captured RP2040 Dual Motor SRJ production problem
 
-On the production fixture, a representative local run completes in about 10.7
-seconds. It stops after three passes when the final pass adds only 0.0025% of the
+On the production fixture, a representative local run completes in about 14
+seconds. It stops after three passes when the final pass adds only 0.026% of the
 nominal copper area, below the 0.1% plateau threshold. The 1 mm routes improve
 as follows using Circuit JSON's physical first-route-point segment-width
 semantics:
 
 | Metric | Before | After |
 | --- | ---: | ---: |
-| Full-width coverage | 1.27% | 86.92% |
-| At least 0.5 mm coverage | 18.13% | 93.36% |
-| Length-weighted average width | 0.232 mm | 0.940 mm |
+| Full-width coverage | 1.27% | 87.36% |
+| At least 0.5 mm coverage | 18.13% | 93.55% |
+| Length-weighted average width | 0.232 mm | 0.939 mm |
 | 5th percentile width | 0.150 mm | 0.375 mm |
 | 10th percentile width | 0.150 mm | 0.750 mm |
-| Normalized width deficit | 76.76% | 5.96% |
+| Normalized width deficit | 76.76% | 6.10% |
 
-The stricter endpoint-minimum lower bound reports 85.85% full-width coverage, a
-0.937 mm average, and a 6.34% normalized deficit. The cleanup removes six
-redundant via pairs (12 vias), converts 80 arbitrary-angle segments to
-0/45/90-degree geometry, and commits six extra-clearance shoves. The 0.25 mm logic-route
-full-width coverage rises from 41.12% to 99.38%, while 1 mm route length grows
-by 7.89%. A representative run uses about 1.05M solver steps, 8,121 planar-grid
-attempts, and 47 layer-grid attempts. The production regression caps wall time,
+The stricter endpoint-minimum lower bound reports 86.16% full-width coverage, a
+0.935 mm average, and a 6.54% normalized deficit. The cleanup removes four
+redundant via pairs (eight vias), converts 67 arbitrary-angle segments to
+0/45/90-degree geometry, commits five extra-clearance shoves, and makes 18
+pad-clearance reroutes. Across that cleanup, violating power segments drop from
+25 to 19 at 0.15 mm clearance, 84 to 68 at 0.30 mm, and 122 to 96 at the desired
+0.50 mm half-width target. The 0.25 mm logic-route full-width coverage rises
+from 41.12% to 99.48%, while 1 mm route length grows by 8.79%. A representative
+run uses about 1.18M solver steps, 8,351 planar-grid attempts, and 51 layer-grid
+attempts. The production regression caps wall time,
 iterations, and both grid counters so a quality gain cannot hide a major
 performance regression.
 
@@ -148,9 +160,10 @@ bun run solver:debug
 The Cosmos debugger uses `GenericSolverDebugger` from
 `@tscircuit/solver-utils`; scans, width checks, candidate setup, and individual
 A* planar/via expansions, cleanup candidates, and individual clearance shoves
-can all be stepped independently. The deployed catalog contains nine **Simple**
+can all be stepped independently. The deployed catalog contains 13 **Simple**
 cases, including layer-change necking, redundant-via removal, an obstacle-aware
-via-pair detour, and clearance-shove simplification, plus three
+via-pair detour, half-width and constrained pad-clearance rerouting, and
+clearance-shove simplification, plus three
 **Complex** cases: narrow-channel retreat, isolated upper `P_MOTOR_A`, and the
 full RP2040 Dual Motor SRJ. Completed views use green/red for nominal/under-width
 top copper, blue/purple for bottom copper, orange for the active segment, and
