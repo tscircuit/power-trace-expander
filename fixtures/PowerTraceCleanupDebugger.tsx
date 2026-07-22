@@ -1,23 +1,25 @@
 import type { SimpleRouteJson } from "@tscircuit/core";
 import { GenericSolverDebugger } from "@tscircuit/solver-utils/react";
 import { useMemo } from "react";
-import {
-  PowerTraceExpanderSolver,
-  type PowerTraceExpanderOptions,
-} from "../src";
+import { PowerTraceCleanupSolver } from "../src";
 
-export const PowerTraceExpanderDebugger = ({
+export const PowerTraceCleanupDebugger = ({
   problem,
-  solverOptions,
   animationSpeed = 30,
+  desiredPadClearance,
 }: {
   problem: SimpleRouteJson;
-  solverOptions?: PowerTraceExpanderOptions;
   animationSpeed?: number;
+  desiredPadClearance?: number;
 }) => {
   const solver = useMemo(
-    () => new PowerTraceExpanderSolver(structuredClone(problem), solverOptions),
-    [problem, solverOptions],
+    () =>
+      new PowerTraceCleanupSolver({
+        simpleRouteJson: problem,
+        traces: problem.traces ?? [],
+        desiredPadClearance,
+      }),
+    [problem, desiredPadClearance],
   );
 
   return (

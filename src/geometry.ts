@@ -234,6 +234,12 @@ export function approximateObstacleWithRects(
         maxY: Math.max(...corners.map((point) => point.y)),
         layers: obstacle.layers,
         kind: "obstacle",
+        obstacleKind: obstacle.connectedTo[0]?.startsWith("pcb_via_")
+          ? "via"
+          : obstacle.connectedTo[0]?.startsWith("pcb_smtpad_") ||
+              obstacle.connectedTo[0]?.startsWith("pcb_plated_hole_")
+            ? "pad"
+            : "other",
         connectionNames: obstacle.connectedTo,
         exactShape: { type: "polygon", points: corners },
       });

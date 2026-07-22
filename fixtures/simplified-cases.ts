@@ -208,4 +208,60 @@ export const simplifiedCases = {
       },
     ],
   }),
+
+  layerChangeWithNecking: createBaseFixture({
+    nominalTraceWidth: 1,
+    bounds: { minX: -6, maxX: 6, minY: -5, maxY: 5 },
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 1,
+        pointsToConnect: [
+          { x: -5, y: 0, layer: "top" },
+          { x: 5, y: 0, layer: "top" },
+        ],
+      },
+    ],
+    obstacles: [
+      {
+        type: "rect",
+        obstacleId: "top-layer-wall",
+        center: { x: 0, y: 0 },
+        width: 1.8,
+        height: 8.5,
+        layers: ["top"],
+        connectedTo: [],
+      },
+      ...[-5, 5].flatMap((x) => [
+        {
+          type: "rect" as const,
+          obstacleId: `power-pad-${x}`,
+          center: { x, y: 0 },
+          width: 0.35,
+          height: 0.5,
+          layers: ["top"],
+          connectedTo: ["POWER"],
+        },
+        {
+          type: "rect" as const,
+          obstacleId: `upper-neighbor-${x}`,
+          center: { x, y: 0.7 },
+          width: 0.6,
+          height: 0.2,
+          layers: ["top"],
+          connectedTo: ["OTHER"],
+        },
+        {
+          type: "rect" as const,
+          obstacleId: `lower-neighbor-${x}`,
+          center: { x, y: -0.7 },
+          width: 0.6,
+          height: 0.2,
+          layers: ["top"],
+          connectedTo: ["OTHER"],
+        },
+      ]),
+    ],
+    traces: [powerTrace([wire(-5, 0), wire(5, 0)])],
+  }),
 } satisfies Record<string, SimpleRouteJson>;

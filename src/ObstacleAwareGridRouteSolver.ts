@@ -1,6 +1,11 @@
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { clamp, pointsEqual } from "./geometry";
+import {
+  calculateOctilinearPaths,
+  getPathLength,
+  isOctilinearSegment,
+} from "./octilinear";
 import type { GridRouteOutput, GridRouteProblem, Point } from "./types";
 
 type SearchNode = {
@@ -188,6 +193,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
       connectionNames: this.problem.connectionNames,
       ignoreTraceIndex: this.problem.ignoreTraceIndex,
       ignoreRouteRange: this.problem.ignoreRouteRange,
+      obstacleClearance: this.problem.obstacleClearance,
     });
   }
 
@@ -212,7 +218,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
     if (
       node.row === this.targetCell.row &&
       node.column === this.targetCell.column &&
-      !this.segmentCollides(node, this.problem.end)
+      this.getAllowedConnector(node, this.problem.end) !== null
     ) {
       this.output = {
         points: this.reconstructPath(nodeIndex),
@@ -233,11 +239,14 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
       const nextFlatIndex = this.toFlatIndex(row, column);
       if (this.closed[nextFlatIndex]) continue;
       const point = this.cellToPoint(row, column);
-      if (this.segmentCollides(node, point)) continue;
+      const connector = this.getAllowedConnector(node, point);
+      if (connector === null) continue;
 
       const moveCost =
-        this.problem.gridSize *
-        (deltaRow !== 0 && deltaColumn !== 0 ? Math.SQRT2 : 1);
+        node.parentIndex === -1 && this.problem.requireOctilinear
+          ? getPathLength(connector)
+          : this.problem.gridSize *
+            (deltaRow !== 0 && deltaColumn !== 0 ? Math.SQRT2 : 1);
       const g = node.g + moveCost;
       if (g >= this.bestCost[nextFlatIndex]!) continue;
       this.bestCost[nextFlatIndex] = g;
@@ -265,7 +274,27 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
       connectionNames: this.problem.connectionNames,
       ignoreTraceIndex: this.problem.ignoreTraceIndex,
       ignoreRouteRange: this.problem.ignoreRouteRange,
+      obstacleClearance: this.problem.obstacleClearance,
     });
+  }
+
+  private getAllowedConnector(start: SearchNode | Point, end: Point) {
+    const isTerminalConnector =
+      this.problem.requireOctilinear &&
+      (("parentIndex" in start && start.parentIndex === -1) ||
+        pointsEqual(end, this.problem.end));
+    if (!isTerminalConnector) {
+      return this.segmentCollides(start, end) ? null : [start, end];
+    }
+    return (
+      calculateOctilinearPaths(start, end).find((path) =>
+        path
+          .slice(0, -1)
+          .every(
+            (point, index) => !this.segmentCollides(point, path[index + 1]!),
+          ),
+      ) ?? null
+    );
   }
 
   private pointToCell(point: Point) {
@@ -315,6 +344,33 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
     }
     if (!pointsEqual(points[points.length - 1]!, this.problem.end)) {
       points.push({ ...this.problem.end });
+    }
+    if (this.problem.requireOctilinear) {
+      const octilinearPoints: Point[] = [points[0]!];
+      for (let index = 0; index < points.length - 1; index++) {
+        const start = points[index]!;
+        const end = points[index + 1]!;
+        const isTerminal = index === 0 || index === points.length - 2;
+        const connector = isTerminal
+          ? this.getAllowedConnector(
+              index === 0
+                ? ({ ...start, parentIndex: -1 } as SearchNode)
+                : start,
+              end,
+            )
+          : [start, end];
+        if (!connector) return points;
+        octilinearPoints.push(...connector.slice(1));
+      }
+      return octilinearPoints.filter((point, index, allPoints) => {
+        if (index === 0 || index === allPoints.length - 1) return true;
+        const previous = allPoints[index - 1]!;
+        const next = allPoints[index + 1]!;
+        const cross =
+          (point.x - previous.x) * (next.y - point.y) -
+          (point.y - previous.y) * (next.x - point.x);
+        return Math.abs(cross) > 1e-8 || !isOctilinearSegment(previous, next);
+      });
     }
     const lineOfSightPoints: Point[] = [points[0]!];
     let anchorIndex = 0;

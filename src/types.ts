@@ -7,9 +7,35 @@ export type WireRoutePoint = Extract<
   { route_type: "wire" }
 >;
 
+export type ViaRoutePoint = Extract<
+  SimplifiedPcbTrace["route"][number],
+  { route_type: "via" }
+>;
+
+export type CopperRoutePoint = WireRoutePoint | ViaRoutePoint;
+
 export type PowerTraceExpanderInput = SimpleRouteJson;
 
+export type PowerTraceExpanderOptions = {
+  /** Restrict the top-level scan while still allowing nearby traces to move. */
+  onlyConnectionNames?: readonly string[];
+  /** Preferred edge clearance from power copper to unrelated pads. */
+  powerTraceToPadClearance?: number;
+};
+
 export type PowerTraceExpanderOutput = SimplifiedPcbTrace[];
+
+export type PowerTraceCleanupProblem = {
+  simpleRouteJson: SimpleRouteJson;
+  traces: SimplifiedPcbTrace[];
+  /** Restrict cleanup to these traces while retaining all traces as obstacles. */
+  traceIndices?: readonly number[];
+  maxRerouteLength?: number;
+  clearancePaddingTiers?: readonly number[];
+  desiredPadClearance?: number;
+};
+
+export type PowerTraceCleanupOutput = SimplifiedPcbTrace[];
 
 export type IndexedObstacle = {
   minX: number;
@@ -18,10 +44,12 @@ export type IndexedObstacle = {
   maxY: number;
   layers: string[];
   kind: "obstacle" | "trace" | "via";
+  obstacleKind?: "pad" | "via" | "other";
   connectionNames: string[];
   traceIndex?: number;
   routeStartIndex?: number;
   routeEndIndex?: number;
+  viaHoleDiameter?: number;
   exactShape?:
     | { type: "segment"; start: Point; end: Point; width: number }
     | { type: "polygon"; points: Point[] }
@@ -35,7 +63,34 @@ export type CollisionQuery = {
   width: number;
   connectionNames: string[];
   ignoreTraceIndex?: number;
+  ignoreTraceIndices?: readonly number[];
   ignoreRouteRange?: { start: number; end: number };
+  /** Override trace-to-pad clearance without widening trace spacing. */
+  obstacleClearance?: number;
+  /** Prospective vias use this to stay out of connected pads as a DFM rule. */
+  blockSameNetObstacles?: boolean;
+  /** Optional mechanical spacing for connected pads when they are blocked. */
+  sameNetObstacleClearance?: number;
+};
+
+export type ViaCollisionQuery = {
+  point: Point;
+  layers: string[];
+  padDiameter: number;
+  holeDiameter: number;
+  connectionNames: string[];
+  ignoreTraceIndex?: number;
+  ignoreTraceIndices?: readonly number[];
+  ignoreRouteRange?: { start: number; end: number };
+  obstacleClearance?: number;
+  blockSameNetObstacles?: boolean;
+  sameNetObstacleClearance?: number;
+  otherNewViaPoints?: Point[];
+  fixedVias?: Array<{
+    point: Point;
+    padDiameter: number;
+    holeDiameter: number;
+  }>;
 };
 
 export type InflationCorridorSegment = {
@@ -50,6 +105,8 @@ export type LocalTraceInflationProblem = {
   traces: SimplifiedPcbTrace[];
   powerTraceIndex: number;
   nominalPowerWidth: number;
+  /** Do not shove traces at or above this electrical nominal width. */
+  pushOnlyNominalWidthsBelow?: number;
   corridor: InflationCorridorSegment[];
   maxRerouteLength?: number;
 };
@@ -91,6 +148,9 @@ export type GridRouteProblem = {
   ignoreRouteRange: { start: number; end: number };
   bounds: SimpleRouteJson["bounds"];
   searchPadding: number;
+  /** Keep the reconstructed route on 0/45/90-degree headings. */
+  requireOctilinear?: boolean;
+  obstacleClearance?: number;
 };
 
 export type GridRouteOutput = {
@@ -98,4 +158,46 @@ export type GridRouteOutput = {
   traceWidth: number;
   gridSize: number;
   gridOffset: GridOffset;
+};
+
+export type LayerGridRouteProblem = {
+  start: Point;
+  end: Point;
+  originalStartLayer: string;
+  originalEndLayer: string;
+  startLayers: string[];
+  endLayers: string[];
+  layers: string[];
+  traceWidth: number;
+  startNeckWidth: number;
+  endNeckWidth: number;
+  maxStartNeckLength: number;
+  maxEndNeckLength: number;
+  neckPenaltyExponent: number;
+  viaDiameter: number;
+  viaHoleDiameter: number;
+  minViaCount: number;
+  maxViaCount: number;
+  viaCost: number;
+  gridSize: number;
+  gridOffset: GridOffset;
+  connectionNames: string[];
+  obstacleIndex: import("./SpatialObstacleIndex").SpatialObstacleIndex;
+  ignoreTraceIndex: number;
+  ignoreRouteRange: { start: number; end: number };
+  softTraceIndices: number[];
+  fixedVias: NonNullable<ViaCollisionQuery["fixedVias"]>;
+  bounds: SimpleRouteJson["bounds"];
+  searchPadding: number;
+  obstacleClearance?: number;
+};
+
+export type LayerGridRouteOutput = {
+  route: CopperRoutePoint[];
+  traceWidth: number;
+  startNeckWidth: number;
+  endNeckWidth: number;
+  gridSize: number;
+  gridOffset: GridOffset;
+  viaCount: number;
 };

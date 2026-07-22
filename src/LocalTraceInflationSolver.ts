@@ -183,7 +183,12 @@ export class LocalTraceInflationSolver extends BaseSolver {
     const connection = this.findConnectionForTrace(trace);
     if (!connection) return;
     const traceWidth = this.resolveNominalTraceWidth(connection);
-    if (traceWidth >= this.inputProblem.nominalPowerWidth - WIDTH_EPSILON) {
+    if (
+      traceWidth >=
+      (this.inputProblem.pushOnlyNominalWidthsBelow ??
+        this.inputProblem.nominalPowerWidth) -
+        WIDTH_EPSILON
+    ) {
       return;
     }
 

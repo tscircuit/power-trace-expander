@@ -11,15 +11,20 @@ import {
   splitUnderWidthWireSegments,
   WIDTH_EPSILON,
 } from "./geometry";
+import { LayerAwareGridRouteSolver } from "./LayerAwareGridRouteSolver";
 import { LocalTraceInflationSolver } from "./LocalTraceInflationSolver";
 import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
+import { PowerTraceCleanupSolver } from "./PowerTraceCleanupSolver";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
   GridOffset,
   GridRouteOutput,
   InflationCorridorSegment,
+  LayerGridRouteOutput,
   PowerTraceExpanderInput,
+  PowerTraceExpanderOptions,
   PowerTraceExpanderOutput,
+  ViaRoutePoint,
   WireRoutePoint,
 } from "./types";
 
@@ -27,14 +32,42 @@ type SolverPhase =
   | "scan-trace"
   | "evaluate-segment"
   | "try-trace-inflation"
+  | "try-layer-candidate"
   | "try-grid-candidate"
+  | "cleanup"
   | "complete";
+
+type RouteInterval = { startIndex: number; endIndex: number };
+
+type LayerRouteAttempt = {
+  interval: RouteInterval;
+  candidateWidths: number[];
+  widthCursor: number;
+  gridResolutions: number[];
+  resolutionCursor: number;
+  offsetCursor: number;
+  startLayers: string[];
+  endLayers: string[];
+  startNeckWidth: number;
+  endNeckWidth: number;
+  softTraceIndices: number[];
+};
 
 const GRID_OFFSETS: GridOffset[] = [
   { x: 0, y: 0 },
   { x: 0.5, y: 0 },
   { x: 0, y: 0.5 },
   { x: 0.5, y: 0.5 },
+];
+
+const LAYER_GRID_VARIANTS: Array<{
+  offset: GridOffset;
+  strictNecking: boolean;
+}> = [
+  { offset: { x: 0, y: 0 }, strictNecking: true },
+  { offset: { x: 0.5, y: 0.5 }, strictNecking: true },
+  { offset: { x: 0, y: 0 }, strictNecking: false },
+  { offset: { x: 0.5, y: 0.5 }, strictNecking: false },
 ];
 
 const uniqueDescending = (values: number[]) =>
@@ -48,6 +81,7 @@ const isWire = (
 
 export class PowerTraceExpanderSolver extends BaseSolver {
   readonly inputProblem: PowerTraceExpanderInput;
+  readonly options: PowerTraceExpanderOptions;
   traces: SimplifiedPcbTrace[];
   obstacleIndex: SpatialObstacleIndex;
   private readonly connectionNameResolver: ConnectionNameResolver;
@@ -82,28 +116,85 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   reroutedSegmentCount = 0;
   unresolvedSegmentCount = 0;
   attemptedGridCount = 0;
+  attemptedLayerGridCount = 0;
   attemptedInflationCount = 0;
   pushedTraceCount = 0;
   elasticPushedTraceCount = 0;
+  layerReroutedTraceCount = 0;
+  insertedViaCount = 0;
+  neckedLayerSegmentCount = 0;
+  removedViaPairCount = 0;
+  removedViaCount = 0;
+  simplifiedPathCount = 0;
+  normalizedSegmentCount = 0;
+  cleanupClearanceShoveCount = 0;
+  relocatedViaCount = 0;
+  unresolvedViaCount = 0;
+  padClearanceRerouteCount = 0;
+  unresolvedPadClearanceCount = 0;
+  initialPadClearanceViolationCount = 0;
+  remainingPadClearanceViolationCount = 0;
 
   private readonly inflationAttemptsBySegment = new Map<string, number>();
+  private readonly layerAttemptCountByTrace = new Map<number, number>();
+  private readonly layerRerouteCountByTrace = new Map<number, number>();
   private activeInflationKey: string | null = null;
   private activeInflationWidth: number | null = null;
+  private layerAttempt: LayerRouteAttempt | null = null;
+  private pendingLayerOutput: LayerGridRouteOutput | null = null;
+  private pendingLayerPushCount = 0;
 
   declare activeSubSolver:
     | ObstacleAwareGridRouteSolver
+    | LayerAwareGridRouteSolver
     | LocalTraceInflationSolver
+    | PowerTraceCleanupSolver
     | null;
 
-  constructor(inputProblem: PowerTraceExpanderInput) {
+  constructor(
+    inputProblem: PowerTraceExpanderInput,
+    options: PowerTraceExpanderOptions = {},
+  ) {
     super();
     this.inputProblem = structuredClone(inputProblem);
+    this.options = structuredClone(options);
     this.traces = structuredClone(inputProblem.traces ?? []);
     this.connectionNameResolver = new ConnectionNameResolver(
       this.inputProblem,
       this.traces,
     );
-    this.traceOrder = this.traces.map((_, traceIndex) => traceIndex);
+    const selectedConnectionNames = options.onlyConnectionNames
+      ? new Set(
+          this.connectionNameResolver.canonicalize([
+            ...options.onlyConnectionNames,
+          ]),
+        )
+      : null;
+    const selectedTraceIndices = this.traces.flatMap((trace, traceIndex) => {
+      if (!selectedConnectionNames) return [traceIndex];
+      const canonicalTraceNames = this.connectionNameResolver.canonicalize(
+        this.getTraceConnectionNames(trace),
+      );
+      return canonicalTraceNames.some((name) =>
+        selectedConnectionNames.has(name),
+      )
+        ? [traceIndex]
+        : [];
+    });
+    const initialPriorityByTrace = new Map(
+      selectedTraceIndices.map((traceIndex) => [
+        traceIndex,
+        this.getInitialTracePriority(this.traces[traceIndex]!),
+      ]),
+    );
+    // Route the largest copper deficits first. This gives long, badly necked
+    // power paths first choice of the scarce wide corridors, while narrow
+    // logic traces remain movable inflation candidates later in the pass.
+    this.traceOrder = selectedTraceIndices.sort(
+      (a, b) =>
+        initialPriorityByTrace.get(b)! - initialPriorityByTrace.get(a)! ||
+        a - b,
+    );
     this.previousWidthDeficit = this.calculateWidthDeficit().deficit;
     this.obstacleIndex = new SpatialObstacleIndex(
       this.inputProblem,
@@ -138,8 +229,14 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       case "try-trace-inflation":
         // The active inflation solver is stepped before the phase switch.
         break;
+      case "try-layer-candidate":
+        this.startNextLayerCandidate();
+        break;
       case "try-grid-candidate":
         this.startNextGridCandidate();
+        break;
+      case "cleanup":
+        // The active cleanup solver is stepped before the phase switch.
         break;
       case "complete":
         this.solved = true;
@@ -212,13 +309,21 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     }
 
     this.traceIndex = this.traces.length;
-    this.phase = "complete";
+    this.phase = "cleanup";
+    this.activeSubSolver = new PowerTraceCleanupSolver({
+      simpleRouteJson: this.inputProblem,
+      traces: this.traces,
+      traceIndices: this.traceOrder,
+      maxRerouteLength: 10,
+      desiredPadClearance: this.getDesiredPadClearance(1),
+    });
   }
 
   private calculateWidthDeficit() {
     let deficit = 0;
     let nominalArea = 0;
-    for (const trace of this.traces) {
+    for (const traceIndex of this.traceOrder) {
+      const trace = this.traces[traceIndex]!;
       if (!this.findConnectionForTrace(trace)) continue;
       const nominalWidth = this.resolveNominalTraceWidth(trace);
       for (let index = 0; index < trace.route.length - 1; index++) {
@@ -234,6 +339,20 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       }
     }
     return { deficit, nominalArea };
+  }
+
+  private getInitialTracePriority(trace: SimplifiedPcbTrace) {
+    const nominalWidth = this.resolveNominalTraceWidth(trace);
+    let deficitArea = 0;
+    for (let index = 0; index < trace.route.length - 1; index++) {
+      const start = trace.route[index];
+      const end = trace.route[index + 1];
+      if (!isWire(start) || !isWire(end) || start.layer !== end.layer) continue;
+      deficitArea +=
+        distance(start, end) *
+        Math.max(0, nominalWidth - Math.min(start.width, end.width));
+    }
+    return nominalWidth * deficitArea;
   }
 
   private evaluateNextSegment() {
@@ -281,6 +400,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
     if (this.startTraceInflation(trace, segmentIndex)) return;
 
+    if (this.prepareLayerRouteAttempt(trace, segmentIndex)) return;
+
+    this.prepareRegularGridCandidates(trace, segmentIndex);
+  }
+
+  private prepareRegularGridCandidates(
+    trace: SimplifiedPcbTrace,
+    segmentIndex: number,
+  ) {
     this.currentIntervals = this.getExponentialIntervalCandidates(
       trace,
       segmentIndex,
@@ -298,6 +426,280 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return;
     }
     this.phase = "try-grid-candidate";
+  }
+
+  private prepareLayerRouteAttempt(
+    trace: SimplifiedPcbTrace,
+    segmentIndex: number,
+  ) {
+    if (
+      this.inputProblem.layerCount < 2 ||
+      this.nominalTraceWidth < 0.5 - WIDTH_EPSILON
+    ) {
+      return false;
+    }
+    const priorAttemptCount =
+      this.layerAttemptCountByTrace.get(this.traceIndex) ?? 0;
+    const priorRerouteCount =
+      this.layerRerouteCountByTrace.get(this.traceIndex) ?? 0;
+    if (
+      priorRerouteCount >= 2 ||
+      priorAttemptCount >= 2 ||
+      priorAttemptCount > this.passIndex ||
+      // Do not repeat an expensive failed search. A second attempt is only
+      // useful after the first layer route changed this trace's geometry.
+      (priorAttemptCount > 0 && priorRerouteCount === 0)
+    ) {
+      return false;
+    }
+    const blockedStart = trace.route[segmentIndex];
+    const blockedEnd = trace.route[segmentIndex + 1];
+    if (
+      !isWire(blockedStart) ||
+      !isWire(blockedEnd) ||
+      Math.min(blockedStart.width, blockedEnd.width) >=
+        this.nominalTraceWidth * 0.5 - WIDTH_EPSILON
+    ) {
+      return false;
+    }
+
+    const interval = this.getExponentialIntervalCandidates(
+      trace,
+      segmentIndex,
+      this.nominalTraceWidth,
+    )
+      .filter((candidate) =>
+        this.intervalSupportsLayerRouting(trace, candidate),
+      )
+      .sort(
+        (a, b) =>
+          // First reach as far as possible beyond the choke. A longest-only
+          // sort can spend the whole 10 mm budget behind the blocked segment
+          // and stop before the constrained pad that actually needs escape.
+          b.endIndex - a.endIndex ||
+          a.startIndex - b.startIndex ||
+          this.getRouteIntervalLength(trace, b.startIndex, b.endIndex) -
+            this.getRouteIntervalLength(trace, a.startIndex, a.endIndex),
+      )[0];
+    if (!interval) return false;
+    const intervalQuality = this.getRouteQuality(
+      trace.route.slice(interval.startIndex, interval.endIndex + 1),
+    );
+    if (intervalQuality.deficitArea < this.nominalTraceWidth) return false;
+    if (
+      priorAttemptCount > 0 &&
+      intervalQuality.deficitArea /
+        Math.max(intervalQuality.length, WIDTH_EPSILON) <
+        0.25
+    ) {
+      return false;
+    }
+
+    const start = trace.route[interval.startIndex] as WireRoutePoint;
+    const end = trace.route[interval.endIndex] as WireRoutePoint;
+    const connectionNames = this.getTraceConnectionNames(trace);
+    const startLayers = this.getEndpointLayers(start, connectionNames);
+    const endLayers = this.getEndpointLayers(end, connectionNames);
+    const startNeckWidth = Math.min(
+      this.nominalTraceWidth,
+      Math.max(
+        start.width,
+        this.findMaximumSafeInPlaceWidth(
+          trace,
+          interval.startIndex,
+          connectionNames,
+        ),
+      ),
+    );
+    const endNeckWidth = Math.min(
+      this.nominalTraceWidth,
+      Math.max(
+        end.width,
+        this.findMaximumSafeInPlaceWidth(
+          trace,
+          interval.endIndex - 1,
+          connectionNames,
+        ),
+      ),
+    );
+    const softTraceIndices = this.getSoftTraceIndices(this.nominalTraceWidth);
+
+    this.layerAttemptCountByTrace.set(this.traceIndex, priorAttemptCount + 1);
+    this.layerAttempt = {
+      interval,
+      candidateWidths: [this.nominalTraceWidth],
+      widthCursor: 0,
+      gridResolutions: [clamp(this.nominalTraceWidth / 4, 0.2, 0.3)],
+      resolutionCursor: 0,
+      offsetCursor: 0,
+      startLayers,
+      endLayers,
+      startNeckWidth,
+      endNeckWidth,
+      softTraceIndices,
+    };
+    this.phase = "try-layer-candidate";
+    return true;
+  }
+
+  private intervalSupportsLayerRouting(
+    trace: SimplifiedPcbTrace,
+    interval: RouteInterval,
+  ) {
+    if (interval.startIndex >= interval.endIndex) return false;
+    for (let index = interval.startIndex; index <= interval.endIndex; index++) {
+      const point = trace.route[index];
+      if (!isWire(point)) return false;
+    }
+    const start = trace.route[interval.startIndex] as WireRoutePoint;
+    const end = trace.route[interval.endIndex] as WireRoutePoint;
+    return start.layer === end.layer;
+  }
+
+  private getEndpointLayers(point: WireRoutePoint, connectionNames: string[]) {
+    return [
+      ...new Set([
+        point.layer,
+        ...this.obstacleIndex.getConnectedLayersAtPoint(
+          { x: point.x, y: point.y },
+          connectionNames,
+        ),
+      ]),
+    ].filter((layer) => this.obstacleIndex.boardLayers.includes(layer));
+  }
+
+  private getSoftTraceIndices(targetWidth: number) {
+    const indices: number[] = [];
+    for (let traceIndex = 0; traceIndex < this.traces.length; traceIndex++) {
+      if (traceIndex === this.traceIndex) continue;
+      const trace = this.traces[traceIndex]!;
+      const connection = this.findConnectionForTrace(trace);
+      if (!connection) continue;
+      const width = Math.max(
+        connection.nominalTraceWidth ??
+          connection.width ??
+          this.inputProblem.nominalTraceWidth ??
+          this.inputProblem.minTraceWidth,
+        this.inputProblem.minTraceWidth,
+      );
+      if (width < targetWidth - WIDTH_EPSILON) indices.push(traceIndex);
+    }
+    return indices;
+  }
+
+  private startNextLayerCandidate() {
+    const attempt = this.layerAttempt;
+    const trace = this.traces[this.traceIndex];
+    if (!attempt || !trace) {
+      this.layerAttempt = null;
+      this.phase = "evaluate-segment";
+      return;
+    }
+    if (attempt.widthCursor >= attempt.candidateWidths.length) {
+      const segmentIndex = this.routeSegmentIndex;
+      this.layerAttempt = null;
+      this.prepareRegularGridCandidates(trace, segmentIndex);
+      return;
+    }
+    const candidateWidth = attempt.candidateWidths[attempt.widthCursor]!;
+    if (attempt.gridResolutions.length === 0) {
+      attempt.gridResolutions = this.getGridResolutions(candidateWidth);
+    }
+    if (attempt.resolutionCursor >= attempt.gridResolutions.length) {
+      attempt.widthCursor++;
+      attempt.gridResolutions = [];
+      attempt.resolutionCursor = 0;
+      attempt.offsetCursor = 0;
+      return;
+    }
+    if (attempt.offsetCursor >= LAYER_GRID_VARIANTS.length) {
+      attempt.resolutionCursor++;
+      attempt.offsetCursor = 0;
+      return;
+    }
+
+    const start = trace.route[attempt.interval.startIndex];
+    const end = trace.route[attempt.interval.endIndex];
+    if (!isWire(start) || !isWire(end)) {
+      this.layerAttempt = null;
+      this.prepareRegularGridCandidates(trace, this.routeSegmentIndex);
+      return;
+    }
+    const gridSize = attempt.gridResolutions[attempt.resolutionCursor]!;
+    const variant = LAYER_GRID_VARIANTS[attempt.offsetCursor]!;
+    const normalizedOffset = variant.offset;
+    const balancedNeckWidth = Math.min(
+      attempt.startNeckWidth,
+      attempt.endNeckWidth,
+    );
+    const viaHoleDiameter =
+      this.inputProblem.min_via_hole_diameter ??
+      this.inputProblem.minViaHoleDiameter ??
+      0.3;
+    const viaDiameter = Math.max(
+      viaHoleDiameter,
+      this.inputProblem.min_via_pad_diameter ??
+        this.inputProblem.minViaPadDiameter ??
+        this.inputProblem.minViaDiameter ??
+        0.6,
+    );
+    const startNeckWidth = Math.max(
+      this.inputProblem.minTraceWidth,
+      Math.min(
+        variant.strictNecking ? attempt.startNeckWidth : balancedNeckWidth,
+        candidateWidth,
+      ),
+    );
+    const endNeckWidth = Math.max(
+      this.inputProblem.minTraceWidth,
+      Math.min(
+        variant.strictNecking ? attempt.endNeckWidth : balancedNeckWidth,
+        candidateWidth,
+      ),
+    );
+    const maximumNeckLength = clamp(this.nominalTraceWidth * 3, 1.5, 3);
+
+    this.attemptedLayerGridCount++;
+    this.activeSubSolver = new LayerAwareGridRouteSolver({
+      start,
+      end,
+      originalStartLayer: start.layer,
+      originalEndLayer: end.layer,
+      startLayers: attempt.startLayers,
+      endLayers: attempt.endLayers,
+      layers: this.obstacleIndex.boardLayers,
+      traceWidth: candidateWidth,
+      startNeckWidth,
+      endNeckWidth,
+      maxStartNeckLength: maximumNeckLength,
+      maxEndNeckLength: maximumNeckLength,
+      neckPenaltyExponent: variant.strictNecking ? 2 : 1,
+      viaDiameter,
+      viaHoleDiameter,
+      minViaCount: 1,
+      maxViaCount: 2,
+      viaCost: Math.max(1, this.nominalTraceWidth * 2),
+      gridSize,
+      gridOffset: {
+        x: normalizedOffset.x * gridSize,
+        y: normalizedOffset.y * gridSize,
+      },
+      connectionNames: this.getTraceConnectionNames(trace),
+      obstacleIndex: this.obstacleIndex,
+      ignoreTraceIndex: this.traceIndex,
+      ignoreRouteRange: {
+        start: Math.max(0, attempt.interval.startIndex - 1),
+        end: Math.min(trace.route.length - 1, attempt.interval.endIndex + 1),
+      },
+      softTraceIndices: attempt.softTraceIndices,
+      fixedVias: this.getFixedViasOutsideInterval(trace, attempt.interval),
+      bounds: this.inputProblem.bounds,
+      obstacleClearance: this.getDesiredPadClearance(candidateWidth),
+      searchPadding: Math.min(
+        5,
+        Math.max(2.5, distance(start, end) / 2, candidateWidth * 4),
+      ),
+    });
   }
 
   private startNextGridCandidate() {
@@ -388,6 +790,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         end: Math.min(trace.route.length - 1, interval.endIndex + 1),
       },
       bounds: this.inputProblem.bounds,
+      obstacleClearance: this.getDesiredPadClearance(candidateWidth),
       searchPadding: Math.min(
         5,
         Math.max(1.5, distance(start, end) / 2, candidateWidth * 3),
@@ -412,12 +815,21 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         start: Math.max(0, interval.startIndex - 1),
         end: Math.min(trace.route.length - 1, interval.endIndex + 1),
       },
+      obstacleClearance: this.getDesiredPadClearance(width),
     });
   }
 
   private stepActiveGridSolver() {
+    if (this.activeSubSolver instanceof PowerTraceCleanupSolver) {
+      this.stepActiveCleanupSolver();
+      return;
+    }
     if (this.activeSubSolver instanceof LocalTraceInflationSolver) {
       this.stepActiveInflationSolver();
+      return;
+    }
+    if (this.activeSubSolver instanceof LayerAwareGridRouteSolver) {
+      this.stepActiveLayerSolver();
       return;
     }
     const solver = this.activeSubSolver!;
@@ -441,6 +853,379 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.failedSubSolvers.push(solver);
     this.activeSubSolver = null;
     this.offsetCursor++;
+  }
+
+  private stepActiveCleanupSolver() {
+    const solver = this.activeSubSolver as PowerTraceCleanupSolver;
+    solver.step();
+    if (!solver.solved && !solver.failed) return;
+
+    if (solver.solved) {
+      this.traces = solver.getOutput();
+      const stats = solver.stats as Record<string, unknown>;
+      this.removedViaPairCount = Number(stats.viaPairCountRemoved ?? 0);
+      this.removedViaCount = Number(stats.viaCountRemoved ?? 0);
+      this.simplifiedPathCount = Number(stats.simplifiedPathCount ?? 0);
+      this.normalizedSegmentCount = Number(stats.normalizedSegmentCount ?? 0);
+      this.cleanupClearanceShoveCount = Number(
+        stats.committedClearanceShoveCount ?? 0,
+      );
+      this.relocatedViaCount = Number(stats.relocatedViaCount ?? 0);
+      this.unresolvedViaCount = Number(stats.unresolvedViaCount ?? 0);
+      this.padClearanceRerouteCount = Number(
+        stats.padClearanceRerouteCount ?? 0,
+      );
+      this.unresolvedPadClearanceCount = Number(
+        stats.unresolvedPadClearanceCount ?? 0,
+      );
+      this.initialPadClearanceViolationCount = Number(
+        stats.initialPadClearanceViolationCount ?? 0,
+      );
+      this.remainingPadClearanceViolationCount = Number(
+        stats.remainingPadClearanceViolationCount ?? 0,
+      );
+      this.activeSubSolver = null;
+      this.phase = "complete";
+      this.rebuildObstacleIndex();
+      return;
+    }
+
+    this.failedSubSolvers ??= [];
+    this.failedSubSolvers.push(solver);
+    this.activeSubSolver = null;
+    this.phase = "complete";
+  }
+
+  private stepActiveLayerSolver() {
+    const solver = this.activeSubSolver as LayerAwareGridRouteSolver;
+    solver.step();
+    if (!solver.solved && !solver.failed) return;
+
+    if (solver.solved) {
+      const output = solver.getOutput();
+      if (
+        output &&
+        !this.layerRouteReplacementCollides(output, true) &&
+        this.layerRouteImprovesInterval(output)
+      ) {
+        this.activeSubSolver = null;
+        this.pendingLayerOutput = output;
+        this.pendingLayerPushCount = 0;
+        if (!this.layerRouteReplacementCollides(output, false)) {
+          this.applyLayerRoute(output);
+          return;
+        }
+        if (this.startPendingLayerInflation()) return;
+        this.pendingLayerOutput = null;
+      }
+    }
+
+    this.failedSubSolvers ??= [];
+    this.failedSubSolvers.push(solver);
+    this.activeSubSolver = null;
+    if (this.layerAttempt) this.layerAttempt.offsetCursor++;
+    this.phase = "try-layer-candidate";
+  }
+
+  private layerRouteReplacementCollides(
+    output: LayerGridRouteOutput,
+    ignoreSoftTraces: boolean,
+  ) {
+    const trace = this.traces[this.traceIndex];
+    const attempt = this.layerAttempt;
+    if (!trace || !attempt) return true;
+    const connectionNames = this.getTraceConnectionNames(trace);
+    const ignoreTraceIndices = ignoreSoftTraces
+      ? attempt.softTraceIndices
+      : undefined;
+    const ignoreRouteRange = {
+      start: Math.max(0, attempt.interval.startIndex - 1),
+      end: Math.min(trace.route.length - 1, attempt.interval.endIndex + 1),
+    };
+    const fixedVias = this.getFixedViasOutsideInterval(trace, attempt.interval);
+
+    for (let index = 0; index < output.route.length; index++) {
+      const point = output.route[index];
+      if (point?.route_type === "via") {
+        if (
+          this.obstacleIndex.collidesVia({
+            point,
+            layers: this.obstacleIndex.boardLayers,
+            padDiameter: point.via_diameter ?? 0.6,
+            holeDiameter:
+              point.via_hole_diameter ??
+              this.obstacleIndex.defaultViaHoleDiameter,
+            connectionNames,
+            ignoreTraceIndex: this.traceIndex,
+            ignoreTraceIndices,
+            otherNewViaPoints: output.route
+              .slice(0, index)
+              .filter(
+                (candidate): candidate is ViaRoutePoint =>
+                  candidate.route_type === "via",
+              )
+              .map((candidate) => ({ x: candidate.x, y: candidate.y })),
+            fixedVias,
+            ignoreRouteRange,
+            obstacleClearance: this.getDesiredPadClearance(output.traceWidth),
+            blockSameNetObstacles: true,
+            sameNetObstacleClearance: 0,
+          })
+        ) {
+          return true;
+        }
+        continue;
+      }
+      const next = output.route[index + 1];
+      if (
+        point?.route_type !== "wire" ||
+        next?.route_type !== "wire" ||
+        point.layer !== next.layer
+      ) {
+        continue;
+      }
+      if (
+        this.obstacleIndex.collides({
+          start: point,
+          end: next,
+          layer: point.layer,
+          // Core validates the joint using both endpoint widths.
+          width: Math.max(point.width, next.width),
+          connectionNames,
+          ignoreTraceIndex: this.traceIndex,
+          ignoreTraceIndices,
+          ignoreRouteRange,
+          obstacleClearance: this.getDesiredPadClearance(output.traceWidth),
+        })
+      ) {
+        return true;
+      }
+    }
+    return this.layerRouteBoundaryCollides(output, ignoreSoftTraces);
+  }
+
+  private getFixedViasOutsideInterval(
+    trace: SimplifiedPcbTrace,
+    interval: RouteInterval,
+  ) {
+    return trace.route.flatMap((point, routeIndex) => {
+      if (
+        point.route_type !== "via" ||
+        (routeIndex >= interval.startIndex && routeIndex <= interval.endIndex)
+      ) {
+        return [];
+      }
+      return [
+        {
+          point: { x: point.x, y: point.y },
+          padDiameter: point.via_diameter ?? 0.6,
+          holeDiameter:
+            point.via_hole_diameter ??
+            this.obstacleIndex.defaultViaHoleDiameter,
+        },
+      ];
+    });
+  }
+
+  private layerRouteBoundaryCollides(
+    output: LayerGridRouteOutput,
+    ignoreSoftTraces: boolean,
+  ) {
+    const trace = this.traces[this.traceIndex]!;
+    const attempt = this.layerAttempt!;
+    const firstWire = output.route.find(
+      (point): point is WireRoutePoint => point.route_type === "wire",
+    );
+    let lastWire: WireRoutePoint | undefined;
+    for (let index = output.route.length - 1; index >= 0; index--) {
+      const point = output.route[index];
+      if (point?.route_type === "wire") {
+        lastWire = point;
+        break;
+      }
+    }
+    if (!firstWire || !lastWire) return true;
+    const boundaries = [
+      {
+        outside: trace.route[attempt.interval.startIndex - 1],
+        inside: firstWire,
+      },
+      {
+        outside: trace.route[attempt.interval.endIndex + 1],
+        inside: lastWire,
+      },
+    ];
+    for (const boundary of boundaries) {
+      if (
+        !isWire(boundary.outside) ||
+        boundary.outside.layer !== boundary.inside.layer
+      ) {
+        continue;
+      }
+      if (
+        this.obstacleIndex.collides({
+          start: boundary.outside,
+          end: boundary.inside,
+          layer: boundary.inside.layer,
+          width: Math.max(boundary.outside.width, boundary.inside.width),
+          connectionNames: this.getTraceConnectionNames(trace),
+          ignoreTraceIndex: this.traceIndex,
+          ignoreTraceIndices: ignoreSoftTraces
+            ? attempt.softTraceIndices
+            : undefined,
+          ignoreRouteRange: {
+            start: Math.max(0, attempt.interval.startIndex - 1),
+            end: Math.min(
+              trace.route.length - 1,
+              attempt.interval.endIndex + 1,
+            ),
+          },
+          obstacleClearance: this.getDesiredPadClearance(output.traceWidth),
+        })
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private layerRouteImprovesInterval(output: LayerGridRouteOutput) {
+    if (output.viaCount === 0) return false;
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.layerAttempt!.interval;
+    const before = this.getRouteQuality(
+      trace.route.slice(interval.startIndex, interval.endIndex + 1),
+    );
+    const after = this.getRouteQuality(output.route);
+    return (
+      after.length <= before.length + 10 + WIDTH_EPSILON &&
+      after.deficitArea <=
+        before.deficitArea - Math.max(0.05, before.deficitArea * 0.1)
+    );
+  }
+
+  private getRouteQuality(route: SimplifiedPcbTrace["route"]) {
+    let length = 0;
+    let deficitArea = 0;
+    for (let index = 0; index < route.length - 1; index++) {
+      const start = route[index];
+      const end = route[index + 1];
+      if (!isWire(start) || !isWire(end) || start.layer !== end.layer) continue;
+      const segmentLength = distance(start, end);
+      const conservativeWidth = Math.min(start.width, end.width);
+      length += segmentLength;
+      deficitArea +=
+        segmentLength * Math.max(0, this.nominalTraceWidth - conservativeWidth);
+    }
+    return { length, deficitArea };
+  }
+
+  private getLayerInflationCorridor(output: LayerGridRouteOutput) {
+    const corridor: InflationCorridorSegment[] = [];
+    for (let index = 0; index < output.route.length; index++) {
+      const point = output.route[index];
+      if (point?.route_type === "via") {
+        for (const layer of this.obstacleIndex.boardLayers) {
+          corridor.push({
+            start: point,
+            end: point,
+            layer,
+            width: point.via_diameter ?? 0.6,
+          });
+        }
+        continue;
+      }
+      const next = output.route[index + 1];
+      if (
+        point?.route_type === "wire" &&
+        next?.route_type === "wire" &&
+        point.layer === next.layer
+      ) {
+        corridor.push({
+          start: point,
+          end: next,
+          layer: point.layer,
+          width: Math.max(point.width, next.width),
+        });
+      }
+    }
+    return corridor;
+  }
+
+  private startPendingLayerInflation() {
+    const output = this.pendingLayerOutput;
+    if (!output || this.pendingLayerPushCount >= 2) return false;
+    const corridor = this.getLayerInflationCorridor(output);
+    if (corridor.length === 0) return false;
+    this.pendingLayerPushCount++;
+    this.attemptedInflationCount++;
+    this.activeSubSolver = new LocalTraceInflationSolver(
+      {
+        simpleRouteJson: this.inputProblem,
+        traces: this.traces,
+        powerTraceIndex: this.traceIndex,
+        nominalPowerWidth: output.traceWidth,
+        corridor,
+        maxRerouteLength: 10,
+      },
+      this.connectionNameResolver,
+    );
+    this.phase = "try-trace-inflation";
+    return true;
+  }
+
+  private applyLayerRoute(output: LayerGridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.layerAttempt!.interval;
+    const originalStart = trace.route[interval.startIndex] as WireRoutePoint;
+    const originalEnd = trace.route[interval.endIndex] as WireRoutePoint;
+    const replacement = structuredClone(output.route);
+    const firstWireIndex = replacement.findIndex(
+      (point) => point.route_type === "wire",
+    );
+    let lastWireIndex = -1;
+    for (let index = replacement.length - 1; index >= 0; index--) {
+      if (replacement[index]?.route_type === "wire") {
+        lastWireIndex = index;
+        break;
+      }
+    }
+    if (firstWireIndex >= 0) {
+      replacement[firstWireIndex] = {
+        ...originalStart,
+        ...replacement[firstWireIndex],
+      } as WireRoutePoint;
+    }
+    if (lastWireIndex >= 0) {
+      replacement[lastWireIndex] = {
+        ...originalEnd,
+        ...replacement[lastWireIndex],
+      } as WireRoutePoint;
+    }
+
+    trace.route.splice(
+      interval.startIndex,
+      interval.endIndex - interval.startIndex + 1,
+      ...replacement,
+    );
+    this.layerReroutedTraceCount++;
+    this.layerRerouteCountByTrace.set(
+      this.traceIndex,
+      (this.layerRerouteCountByTrace.get(this.traceIndex) ?? 0) + 1,
+    );
+    this.reroutedSegmentCount++;
+    this.insertedViaCount += output.viaCount;
+    this.neckedLayerSegmentCount += replacement.filter(
+      (point) =>
+        point.route_type === "wire" &&
+        point.width < this.nominalTraceWidth - WIDTH_EPSILON,
+    ).length;
+    this.routeSegmentIndex = interval.startIndex;
+    this.currentIntervals = [];
+    this.layerAttempt = null;
+    this.pendingLayerOutput = null;
+    this.pendingLayerPushCount = 0;
+    this.phase = "evaluate-segment";
   }
 
   private startTraceInflation(trace: SimplifiedPcbTrace, segmentIndex: number) {
@@ -520,6 +1305,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
           start: firstAffectedSegment,
           end: lastAffectedSegment + 1,
         },
+        obstacleClearance: this.getDesiredPadClearance(targetWidth),
       };
       const collisions = this.obstacleIndex.findCollisions(query);
       if (collisions.length === 0 && this.obstacleIndex.collides(query)) {
@@ -587,6 +1373,20 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         this.activeInflationKey = null;
         this.activeInflationWidth = null;
         this.rebuildObstacleIndex();
+        if (this.pendingLayerOutput) {
+          if (
+            !this.layerRouteReplacementCollides(this.pendingLayerOutput, false)
+          ) {
+            this.applyLayerRoute(this.pendingLayerOutput);
+            return;
+          }
+          if (this.startPendingLayerInflation()) return;
+          this.pendingLayerOutput = null;
+          this.pendingLayerPushCount = 0;
+          if (this.layerAttempt) this.layerAttempt.offsetCursor++;
+          this.phase = "try-layer-candidate";
+          return;
+        }
         this.phase = "evaluate-segment";
         return;
       }
@@ -600,6 +1400,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeInflationKey = null;
     this.activeInflationWidth = null;
     this.activeSubSolver = null;
+    if (this.pendingLayerOutput) {
+      this.pendingLayerOutput = null;
+      this.pendingLayerPushCount = 0;
+      if (this.layerAttempt) this.layerAttempt.offsetCursor++;
+      this.phase = "try-layer-candidate";
+      return;
+    }
     this.phase = "evaluate-segment";
   }
 
@@ -741,6 +1548,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
             start: Math.max(0, interval.startIndex - 1),
             end: Math.min(trace.route.length - 1, interval.endIndex + 1),
           },
+          obstacleClearance: this.getDesiredPadClearance(proposedWidth),
         })
       ) {
         return true;
@@ -781,6 +1589,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
             start: boundary.startIndex,
             end: boundary.endIndex,
           },
+          obstacleClearance: this.getDesiredPadClearance(
+            Math.max(start.width, end.width, output.traceWidth),
+          ),
         })
       ) {
         return true;
@@ -838,6 +1649,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
             start: firstAffectedSegment,
             end: lastAffectedSegment + 1,
           },
+          obstacleClearance: this.getDesiredPadClearance(proposedWidth),
         })
       ) {
         return false;
@@ -1091,6 +1903,23 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     );
   }
 
+  private getDesiredPadClearance(nominalWidth = this.nominalTraceWidth) {
+    const baseClearance = Math.max(
+      this.inputProblem.defaultObstacleMargin ?? 0,
+      this.inputProblem.minTraceToPadEdgeClearance ?? 0,
+      0.1,
+    );
+    if (nominalWidth < 0.5 - WIDTH_EPSILON) return baseClearance;
+    // Width recovery gets first choice of the existing corridor. The cleanup
+    // phase then reroutes full-width copper away from pads transactionally,
+    // avoiding an early clearance constraint that would preserve long necks.
+    if (this.phase !== "cleanup") return baseClearance;
+    return Math.max(
+      baseClearance,
+      this.options.powerTraceToPadClearance ?? 0.15,
+    );
+  }
+
   private findConnectionForTrace(trace: SimplifiedPcbTrace) {
     const traceNames = this.getTraceConnectionNames(trace);
     return this.inputProblem.connections.find((candidate) =>
@@ -1173,6 +2002,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       plateauReached: this.plateauReached,
       traceIndex: this.traceIndex,
       traceCount: this.traces.length,
+      selectedTraceCount: this.traceOrder.length,
       routeSegmentIndex: this.routeSegmentIndex,
       nominalTraceWidth: this.nominalTraceWidth,
       intervalCursor: this.intervalCursor,
@@ -1189,26 +2019,42 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       reroutedSegmentCount: this.reroutedSegmentCount,
       unresolvedSegmentCount: this.unresolvedSegmentCount,
       attemptedGridCount: this.attemptedGridCount,
+      attemptedLayerGridCount: this.attemptedLayerGridCount,
       attemptedInflationCount: this.attemptedInflationCount,
       activeInflationWidth: this.activeInflationWidth,
       pushedTraceCount: this.pushedTraceCount,
       elasticPushedTraceCount: this.elasticPushedTraceCount,
+      layerReroutedTraceCount: this.layerReroutedTraceCount,
+      insertedViaCount: this.insertedViaCount,
+      neckedLayerSegmentCount: this.neckedLayerSegmentCount,
+      removedViaPairCount: this.removedViaPairCount,
+      removedViaCount: this.removedViaCount,
+      simplifiedPathCount: this.simplifiedPathCount,
+      normalizedSegmentCount: this.normalizedSegmentCount,
+      cleanupClearanceShoveCount: this.cleanupClearanceShoveCount,
+      relocatedViaCount: this.relocatedViaCount,
+      unresolvedViaCount: this.unresolvedViaCount,
+      padClearanceRerouteCount: this.padClearanceRerouteCount,
+      unresolvedPadClearanceCount: this.unresolvedPadClearanceCount,
+      initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
+      remainingPadClearanceViolationCount:
+        this.remainingPadClearanceViolationCount,
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }
 
   computeProgress() {
-    if (this.traces.length === 0) return 1;
+    if (this.traceOrder.length === 0) return 1;
     return Math.min(
       0.99,
       (this.passIndex +
-        Math.max(0, this.traceOrderCursor) / this.traces.length) /
+        Math.max(0, this.traceOrderCursor) / this.traceOrder.length) /
         this.maxPassCount,
     );
   }
 
   override getConstructorParams() {
-    return [this.inputProblem];
+    return [this.inputProblem, this.options];
   }
 
   override getOutput(): PowerTraceExpanderOutput {
@@ -1217,9 +2063,19 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
   override visualize(): GraphicsObject {
     const lines: NonNullable<GraphicsObject["lines"]> = [];
+    const circles: NonNullable<GraphicsObject["circles"]> = [];
     for (let traceIndex = 0; traceIndex < this.traces.length; traceIndex++) {
       const trace = this.traces[traceIndex]!;
       const nominalWidth = this.resolveNominalTraceWidth(trace);
+      for (const point of trace.route) {
+        if (point.route_type !== "via") continue;
+        circles.push({
+          center: point,
+          radius: (point.via_diameter ?? 0.6) / 2,
+          fill: "#d4a017",
+          stroke: "#7a5700",
+        });
+      }
       for (
         let routeIndex = 0;
         routeIndex < trace.route.length - 1;
@@ -1235,13 +2091,18 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         const meetsWidth =
           start.width >= nominalWidth - WIDTH_EPSILON &&
           end.width >= nominalWidth - WIDTH_EPSILON;
+        const isBottom = start.layer === "bottom";
         lines.push({
           points: [start, end],
           strokeColor: isCurrent
             ? "#ff8c00"
             : meetsWidth
-              ? "#169c45"
-              : "#cc3344",
+              ? isBottom
+                ? "#2468c7"
+                : "#169c45"
+              : isBottom
+                ? "#8b4bb8"
+                : "#cc3344",
           strokeWidth: Math.max(start.width, end.width),
         });
       }
@@ -1251,7 +2112,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       title: `Power trace expander: ${this.phase}`,
       lines,
       points: [],
-      circles: [],
+      circles,
       rects: this.obstacleIndex.items
         .filter((item) => item.kind === "obstacle")
         .slice(0, 2_000)
