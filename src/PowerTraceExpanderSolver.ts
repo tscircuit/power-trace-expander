@@ -15,6 +15,7 @@ import { LayerAwareGridRouteSolver } from "./LayerAwareGridRouteSolver";
 import { LocalTraceInflationSolver } from "./LocalTraceInflationSolver";
 import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
 import { PowerTraceCleanupSolver } from "./PowerTraceCleanupSolver";
+import { PowerTraceClearanceRepairSolver } from "./PowerTraceClearanceRepairSolver";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
   GridOffset,
@@ -35,6 +36,7 @@ type SolverPhase =
   | "try-layer-candidate"
   | "try-grid-candidate"
   | "cleanup"
+  | "repair-trace-clearance"
   | "complete";
 
 type RouteInterval = { startIndex: number; endIndex: number };
@@ -132,6 +134,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   unresolvedViaCount = 0;
   padClearanceRerouteCount = 0;
   unresolvedPadClearanceCount = 0;
+  repairedTraceClearanceSegmentCount = 0;
+  unresolvedTraceClearanceSegmentCount = 0;
   initialPadClearanceViolationCount = 0;
   remainingPadClearanceViolationCount = 0;
   initialPadClearanceViolationCountByClearance: Record<string, number> = {};
@@ -151,6 +155,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     | LayerAwareGridRouteSolver
     | LocalTraceInflationSolver
     | PowerTraceCleanupSolver
+    | PowerTraceClearanceRepairSolver
     | null;
 
   constructor(
@@ -239,6 +244,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         break;
       case "cleanup":
         // The active cleanup solver is stepped before the phase switch.
+        break;
+      case "repair-trace-clearance":
+        // The active clearance repair solver is stepped before the phase switch.
         break;
       case "complete":
         this.solved = true;
@@ -822,6 +830,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private stepActiveGridSolver() {
+    if (this.activeSubSolver instanceof PowerTraceClearanceRepairSolver) {
+      this.stepActiveTraceClearanceRepairSolver();
+      return;
+    }
     if (this.activeSubSolver instanceof PowerTraceCleanupSolver) {
       this.stepActiveCleanupSolver();
       return;
@@ -894,6 +906,40 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         ...((stats.remainingPadClearanceViolationCountByClearance ??
           {}) as Record<string, number>),
       };
+      this.activeSubSolver = null;
+      this.startTraceClearanceRepair();
+      this.rebuildObstacleIndex();
+      return;
+    }
+
+    this.failedSubSolvers ??= [];
+    this.failedSubSolvers.push(solver);
+    this.activeSubSolver = null;
+    this.startTraceClearanceRepair();
+  }
+
+  private startTraceClearanceRepair() {
+    this.phase = "repair-trace-clearance";
+    this.activeSubSolver = new PowerTraceClearanceRepairSolver({
+      simpleRouteJson: this.inputProblem,
+      traces: this.traces,
+    });
+  }
+
+  private stepActiveTraceClearanceRepairSolver() {
+    const solver = this.activeSubSolver as PowerTraceClearanceRepairSolver;
+    solver.step();
+    if (!solver.solved && !solver.failed) return;
+
+    if (solver.solved) {
+      this.traces = solver.getOutput();
+      const stats = solver.stats as Record<string, unknown>;
+      this.repairedTraceClearanceSegmentCount = Number(
+        stats.repairedSegmentCount ?? 0,
+      );
+      this.unresolvedTraceClearanceSegmentCount = Number(
+        stats.unresolvedSegmentCount ?? 0,
+      );
       this.activeSubSolver = null;
       this.phase = "complete";
       this.rebuildObstacleIndex();
@@ -2046,6 +2092,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       unresolvedViaCount: this.unresolvedViaCount,
       padClearanceRerouteCount: this.padClearanceRerouteCount,
       unresolvedPadClearanceCount: this.unresolvedPadClearanceCount,
+      repairedTraceClearanceSegmentCount:
+        this.repairedTraceClearanceSegmentCount,
+      unresolvedTraceClearanceSegmentCount:
+        this.unresolvedTraceClearanceSegmentCount,
       initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
       remainingPadClearanceViolationCount:
         this.remainingPadClearanceViolationCount,

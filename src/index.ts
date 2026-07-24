@@ -9,6 +9,10 @@ export { LayerAwareGridRouteSolver } from "./LayerAwareGridRouteSolver";
 export { ElasticTracePushSolver } from "./ElasticTracePushSolver";
 export { PowerTraceExpanderSolver } from "./PowerTraceExpanderSolver";
 export { PowerTraceCleanupSolver } from "./PowerTraceCleanupSolver";
+export {
+  PowerTraceClearanceRepairSolver,
+  type PowerTraceClearanceRepairProblem,
+} from "./PowerTraceClearanceRepairSolver";
 export { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 export { ConnectionNameResolver } from "./ConnectionNameResolver";
 export {
