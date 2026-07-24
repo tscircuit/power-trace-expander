@@ -73,6 +73,38 @@ type ViaGridAttempt = {
   offsetCursor: number;
 };
 
+type ViaRepairReplacement = {
+  startIndex: number;
+  endIndex: number;
+  route: SimplifiedPcbTrace["route"];
+};
+
+type PushedViaRepair = {
+  traceIndex: number;
+  viaIndex: number;
+  point: Point;
+  padClearance: number;
+  corridor: InflationCorridorSegment[];
+};
+
+type ViaRepairContext = {
+  trace: SimplifiedPcbTrace;
+  viaIndex: number;
+  via: ViaRoutePoint;
+  leftWire: WireRoutePoint;
+  rightWire: WireRoutePoint;
+  leftIsEndpoint: boolean;
+  rightIsEndpoint: boolean;
+  leftAnchor: WireRoutePoint;
+  rightAnchor: WireRoutePoint;
+  originalLength: number;
+  connectionNames: string[];
+  viaDiameter: number;
+  holeDiameter: number;
+  ignoreRouteRange: { start: number; end: number };
+  candidates: Point[];
+};
+
 const GRID_OFFSETS = [
   { x: 0, y: 0 },
   { x: 0.5, y: 0.5 },
@@ -127,6 +159,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   achievedExtraClearanceCount = 0;
   relocatedViaCount = 0;
   unresolvedViaCount = 0;
+  attemptedPushedViaRepairCount = 0;
+  committedPushedViaRepairCount = 0;
   padClearanceRerouteCount = 0;
   unresolvedPadClearanceCount = 0;
   initialPadClearanceViolationCount = 0;
@@ -147,6 +181,9 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private activeShovePadding = 0;
   private viaGridAttempt: ViaGridAttempt | null = null;
   private candidateSetMayUseGridFallback = false;
+  private pendingPushedViaRepair: PushedViaRepair | null = null;
+  private alternatePushedViaRepairs: PushedViaRepair[] = [];
+  private pushedViaRepairRollbackTraces: SimplifiedPcbTrace[] | null = null;
   private resumePhase: Exclude<
     CleanupPhase,
     "evaluate-candidate" | "shove-clearance" | "complete"
@@ -289,6 +326,17 @@ export class PowerTraceCleanupSolver extends BaseSolver {
 
     const replacement = this.findViaRepair(trace, viaIndex, padClearance);
     if (!replacement) {
+      const pushedRepairs = this.findPushableViaRepairs(
+        trace,
+        viaIndex,
+        padClearance,
+      );
+      const pushedRepair = pushedRepairs.shift();
+      if (pushedRepair) {
+        this.alternatePushedViaRepairs = pushedRepairs;
+        this.startPushedViaRepair(pushedRepair);
+        return;
+      }
       this.unresolvedViaCount++;
       return;
     }
@@ -307,6 +355,146 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     viaIndex: number,
     padClearance: number,
   ) {
+    const context = this.createViaRepairContext(trace, viaIndex);
+    if (!context) return null;
+    const candidates = context.candidates
+      .map((point) => ({
+        point,
+        movedLength:
+          distance(context.leftAnchor, point) +
+          distance(point, context.rightAnchor),
+      }))
+      .filter(
+        ({ movedLength }) =>
+          movedLength <=
+          context.originalLength +
+            Math.min(6, this.maxRerouteLength) +
+            WIDTH_EPSILON,
+      );
+    candidates.sort(
+      (a, b) =>
+        a.movedLength - b.movedLength ||
+        distance(a.point, context.via) - distance(b.point, context.via),
+    );
+    for (const candidate of candidates) {
+      if (this.isViaRepairPointSafe(context, candidate.point, padClearance)) {
+        return this.createViaRepairReplacement(context, candidate.point);
+      }
+    }
+    return null;
+  }
+
+  private findPushableViaRepairs(
+    trace: SimplifiedPcbTrace,
+    viaIndex: number,
+    padClearance: number,
+  ): PushedViaRepair[] {
+    const context = this.createViaRepairContext(trace, viaIndex);
+    if (!context) return [];
+    const pushableCandidates = context.candidates.flatMap((point) => {
+      const movedLength =
+        distance(context.leftAnchor, point) +
+        distance(point, context.rightAnchor);
+      if (
+        movedLength >
+        context.originalLength +
+          Math.min(6, this.maxRerouteLength) +
+          WIDTH_EPSILON
+      ) {
+        return [];
+      }
+      const blockers = new Set<number>();
+      const collisionQueries = this.getViaRepairCollisionQueries(
+        context,
+        point,
+        padClearance,
+      );
+      for (const query of collisionQueries) {
+        for (const collision of this.obstacleIndex.findCollisions(query)) {
+          if (
+            collision.kind !== "trace" ||
+            collision.traceIndex === undefined ||
+            collision.traceIndex === this.traceCursor
+          ) {
+            return [];
+          }
+          blockers.add(collision.traceIndex);
+        }
+      }
+      if (blockers.size === 0 || blockers.size > 2) return [];
+      const ignoredTraceIndices = [...blockers];
+      if (
+        !this.isViaRepairPointSafe(
+          context,
+          point,
+          padClearance,
+          ignoredTraceIndices,
+        )
+      ) {
+        return [];
+      }
+      return [
+        {
+          point,
+          movedLength,
+          blockerCount: blockers.size,
+          blockerKey: [...blockers].sort((a, b) => a - b).join(","),
+        },
+      ];
+    });
+    pushableCandidates.sort(
+      (a, b) =>
+        a.blockerCount - b.blockerCount ||
+        a.movedLength - b.movedLength ||
+        distance(a.point, context.via) - distance(b.point, context.via),
+    );
+    const selectedCandidates = [
+      ...new Map(
+        [...pushableCandidates]
+          .reverse()
+          .map((candidate) => [candidate.blockerKey, candidate]),
+      ).values(),
+      ...pushableCandidates,
+    ].filter(
+      (candidate, index, candidates) =>
+        candidates.findIndex(
+          (other) =>
+            other.point.x === candidate.point.x &&
+            other.point.y === candidate.point.y,
+        ) === index,
+    );
+    return selectedCandidates.slice(0, 12).map((candidate) => ({
+      traceIndex: this.traceCursor,
+      viaIndex,
+      point: candidate.point,
+      padClearance,
+      corridor: [
+        {
+          start: context.leftAnchor,
+          end: candidate.point,
+          layer: context.leftWire.layer,
+          width: context.leftWire.width,
+        },
+        {
+          start: candidate.point,
+          end: context.rightAnchor,
+          layer: context.rightWire.layer,
+          width: context.rightWire.width,
+        },
+        ...this.obstacleIndex.boardLayers.map((layer) => ({
+          start: candidate.point,
+          end: candidate.point,
+          layer,
+          width: context.viaDiameter,
+        })),
+      ],
+    }));
+  }
+
+  private createViaRepairContext(
+    trace: SimplifiedPcbTrace,
+    viaIndex: number,
+  ): ViaRepairContext | null {
     const via = trace.route[viaIndex];
     const leftWire = trace.route[viaIndex - 1];
     const rightWire = trace.route[viaIndex + 1];
@@ -335,7 +523,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         this.obstacleIndex.minViaHoleEdgeToViaHoleEdgeClearance +
         0.05,
     );
-    const candidates = [
+    const radialCandidates = [
       minimumRadius,
       minimumRadius + 0.15,
       minimumRadius + 0.3,
@@ -350,82 +538,208 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         y: Math.round((via.y + direction.y * radius) / 0.025) * 0.025,
       })),
     );
-
-    const safeCandidates = candidates.flatMap((point) => {
-      const movedLength =
-        distance(leftAnchor, point) + distance(point, rightAnchor);
-      if (movedLength > originalLength + 3 + WIDTH_EPSILON) return [];
-      if (
-        this.obstacleIndex.collidesVia({
-          point,
-          layers: this.obstacleIndex.boardLayers,
-          padDiameter: viaDiameter,
-          holeDiameter,
-          connectionNames,
-          ignoreTraceIndex: this.traceCursor,
-          ignoreRouteRange: { start: viaIndex, end: viaIndex },
-          obstacleClearance: padClearance,
-          blockSameNetObstacles: true,
-          sameNetObstacleClearance: 0,
-        })
-      ) {
-        return [];
-      }
-      const ignoreRouteRange = {
+    const candidates = [
+      ...radialCandidates,
+      ...radialCandidates.flatMap((point) => [
+        { x: point.x, y: Math.floor(via.y * 10) / 10 },
+        { x: point.x, y: Math.ceil(via.y * 10) / 10 },
+        { x: Math.floor(via.x * 10) / 10, y: point.y },
+        { x: Math.ceil(via.x * 10) / 10, y: point.y },
+      ]),
+    ].filter(
+      (point, index, points) =>
+        points.findIndex(
+          (other) => other.x === point.x && other.y === point.y,
+        ) === index,
+    );
+    return {
+      trace,
+      viaIndex,
+      via,
+      leftWire,
+      rightWire,
+      leftIsEndpoint,
+      rightIsEndpoint,
+      leftAnchor,
+      rightAnchor,
+      originalLength,
+      connectionNames,
+      viaDiameter,
+      holeDiameter,
+      ignoreRouteRange: {
         start: Math.max(0, viaIndex - 2),
         end: Math.min(trace.route.length - 1, viaIndex + 2),
-      };
-      const segmentChecks = [
-        {
-          start: leftAnchor,
-          end: point,
-          layer: leftWire.layer,
-          width: leftWire.width,
-        },
-        {
-          start: point,
-          end: rightAnchor,
-          layer: rightWire.layer,
-          width: rightWire.width,
-        },
-      ];
-      if (
-        segmentChecks.some((segment) =>
-          this.obstacleIndex.collides({
-            ...segment,
-            connectionNames,
-            ignoreTraceIndex: this.traceCursor,
-            ignoreRouteRange,
-            obstacleClearance: padClearance,
-          }),
-        )
-      ) {
-        return [];
-      }
-      return [{ point, movedLength }];
-    });
-    safeCandidates.sort(
-      (a, b) =>
-        a.movedLength - b.movedLength ||
-        distance(a.point, via) - distance(b.point, via),
-    );
-    const best = safeCandidates[0];
-    if (!best) return null;
+      },
+      candidates,
+    };
+  }
 
-    const movedLeft: WireRoutePoint = { ...leftWire, ...best.point };
-    const movedVia: ViaRoutePoint = { ...via, ...best.point };
-    const movedRight: WireRoutePoint = { ...rightWire, ...best.point };
+  private getViaRepairCollisionQueries(
+    context: ViaRepairContext,
+    point: Point,
+    padClearance: number,
+    ignoreTraceIndices?: number[],
+  ) {
+    const common = {
+      connectionNames: context.connectionNames,
+      ignoreTraceIndex: this.traceCursor,
+      ignoreTraceIndices,
+      ignoreRouteRange: context.ignoreRouteRange,
+      obstacleClearance: padClearance,
+    };
+    return [
+      ...this.obstacleIndex.boardLayers.map((layer) => ({
+        ...common,
+        start: point,
+        end: point,
+        layer,
+        width: context.viaDiameter,
+        blockSameNetObstacles: true,
+        sameNetObstacleClearance: 0,
+      })),
+      {
+        ...common,
+        start: context.leftAnchor,
+        end: point,
+        layer: context.leftWire.layer,
+        width: context.leftWire.width,
+      },
+      {
+        ...common,
+        start: point,
+        end: context.rightAnchor,
+        layer: context.rightWire.layer,
+        width: context.rightWire.width,
+      },
+    ];
+  }
+
+  private isViaRepairPointSafe(
+    context: ViaRepairContext,
+    point: Point,
+    padClearance: number,
+    ignoreTraceIndices?: number[],
+  ) {
+    if (
+      this.obstacleIndex.collidesVia({
+        point,
+        layers: this.obstacleIndex.boardLayers,
+        padDiameter: context.viaDiameter,
+        holeDiameter: context.holeDiameter,
+        connectionNames: context.connectionNames,
+        ignoreTraceIndex: this.traceCursor,
+        ignoreTraceIndices,
+        ignoreRouteRange: { start: context.viaIndex, end: context.viaIndex },
+        obstacleClearance: padClearance,
+        blockSameNetObstacles: true,
+        sameNetObstacleClearance: 0,
+      })
+    ) {
+      return false;
+    }
+    return !this.getViaRepairCollisionQueries(
+      context,
+      point,
+      padClearance,
+      ignoreTraceIndices,
+    )
+      .slice(this.obstacleIndex.boardLayers.length)
+      .some((query) => this.obstacleIndex.collides(query));
+  }
+
+  private createViaRepairReplacement(
+    context: ViaRepairContext,
+    point: Point,
+  ): ViaRepairReplacement {
+    const movedLeft: WireRoutePoint = { ...context.leftWire, ...point };
+    const movedVia: ViaRoutePoint = { ...context.via, ...point };
+    const movedRight: WireRoutePoint = { ...context.rightWire, ...point };
     return {
-      startIndex: viaIndex - 1,
-      endIndex: viaIndex + 1,
+      startIndex: context.viaIndex - 1,
+      endIndex: context.viaIndex + 1,
       route: [
-        ...(leftIsEndpoint ? [leftWire] : []),
+        ...(context.leftIsEndpoint ? [context.leftWire] : []),
         movedLeft,
         movedVia,
         movedRight,
-        ...(rightIsEndpoint ? [rightWire] : []),
+        ...(context.rightIsEndpoint ? [context.rightWire] : []),
       ],
     };
+  }
+
+  private startPushedViaRepair(repair: PushedViaRepair) {
+    this.pendingPushedViaRepair = repair;
+    this.pushedViaRepairRollbackTraces = structuredClone(this.traces);
+    this.attemptedPushedViaRepairCount++;
+    this.activeSubSolver = new LocalTraceInflationSolver(
+      {
+        simpleRouteJson: this.inputProblem.simpleRouteJson,
+        traces: this.traces,
+        powerTraceIndex: repair.traceIndex,
+        nominalPowerWidth: Math.max(
+          ...repair.corridor.map((segment) => segment.width),
+        ),
+        pushOnlyNominalWidthsBelow: Number.POSITIVE_INFINITY,
+        corridor: repair.corridor,
+        maxRerouteLength: this.maxRerouteLength,
+      },
+      this.connectionNameResolver,
+    );
+  }
+
+  private finishPushedViaRepairSolver(solver: LocalTraceInflationSolver) {
+    const repair = this.pendingPushedViaRepair;
+    this.activeSubSolver = null;
+    if (!repair) return;
+
+    if (solver.solved) {
+      const output = solver.getOutput();
+      if (output) {
+        this.traces = output.traces;
+        this.rebuildObstacleIndex();
+        const trace = this.traces[repair.traceIndex];
+        const context = trace
+          ? this.createViaRepairContext(trace, repair.viaIndex)
+          : null;
+        if (
+          context &&
+          this.isViaRepairPointSafe(context, repair.point, repair.padClearance)
+        ) {
+          const replacement = this.createViaRepairReplacement(
+            context,
+            repair.point,
+          );
+          trace!.route.splice(
+            replacement.startIndex,
+            replacement.endIndex - replacement.startIndex + 1,
+            ...replacement.route,
+          );
+          this.relocatedViaCount++;
+          this.committedPushedViaRepairCount++;
+          this.routeCursor = replacement.startIndex + replacement.route.length;
+          this.pendingPushedViaRepair = null;
+          this.alternatePushedViaRepairs = [];
+          this.pushedViaRepairRollbackTraces = null;
+          this.rebuildObstacleIndex();
+          return;
+        }
+      }
+    }
+
+    if (this.pushedViaRepairRollbackTraces) {
+      this.traces = this.pushedViaRepairRollbackTraces;
+    }
+    this.pendingPushedViaRepair = null;
+    this.pushedViaRepairRollbackTraces = null;
+    const alternateRepair = this.alternatePushedViaRepairs.shift();
+    if (alternateRepair) {
+      this.rebuildObstacleIndex();
+      this.startPushedViaRepair(alternateRepair);
+      return;
+    }
+    this.alternatePushedViaRepairs = [];
+    this.unresolvedViaCount++;
+    this.rebuildObstacleIndex();
   }
 
   private scanNextViaPair() {
@@ -1044,6 +1358,13 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     const solver = this.activeSubSolver!;
     solver.step();
     if (!solver.solved && !solver.failed) return;
+    if (
+      this.pendingPushedViaRepair &&
+      solver instanceof LocalTraceInflationSolver
+    ) {
+      this.finishPushedViaRepairSolver(solver);
+      return;
+    }
     if (solver instanceof ObstacleAwareGridRouteSolver) {
       this.finishViaGridSolver(solver);
       return;
@@ -1771,6 +2092,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       achievedExtraClearanceCount: this.achievedExtraClearanceCount,
       relocatedViaCount: this.relocatedViaCount,
       unresolvedViaCount: this.unresolvedViaCount,
+      attemptedPushedViaRepairCount: this.attemptedPushedViaRepairCount,
+      committedPushedViaRepairCount: this.committedPushedViaRepairCount,
       padClearanceRerouteCount: this.padClearanceRerouteCount,
       unresolvedPadClearanceCount: this.unresolvedPadClearanceCount,
       initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,

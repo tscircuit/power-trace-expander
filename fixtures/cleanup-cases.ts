@@ -174,6 +174,57 @@ export const cleanupCases = {
     ],
   },
 
+  connectedPadViaBehindConnectionlessTrace: {
+    ...baseProblem,
+    bounds: { minX: -6, maxX: 6, minY: -1, maxY: 1 },
+    defaultObstacleMargin: 0.1,
+    minTraceToPadEdgeClearance: 0.1,
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 0.25,
+        pointsToConnect: [
+          { x: 0, y: 0, layer: "top" },
+          { x: 4, y: 0, layer: "bottom" },
+        ],
+      },
+    ],
+    obstacles: [
+      {
+        type: "rect",
+        obstacleId: "pcb_smtpad_connected",
+        center: { x: 0, y: 0 },
+        width: 1,
+        height: 1,
+        layers: ["top"],
+        connectedTo: ["pcb_smtpad_connected", "POWER"],
+      },
+      {
+        type: "rect",
+        obstacleId: "right_side_blocker",
+        center: { x: 1.1, y: 0 },
+        width: 1,
+        height: 1,
+        layers: ["top"],
+        connectedTo: ["right_side_blocker", "OTHER"],
+      },
+    ],
+    traces: [
+      powerTrace([
+        wire(0, 0, 0.25),
+        via(0, 0),
+        wire(0, 0, 0.25, "bottom"),
+        wire(4, 0, 0.25, "bottom"),
+      ]),
+      {
+        type: "pcb_trace",
+        pcb_trace_id: "connectionless-local-trace",
+        connection_name: "LOCAL_ONLY",
+        route: [wire(-1, -0.5, 0.15), wire(-1, 0.5, 0.15)],
+      },
+    ],
+  },
+
   clusteredSameNetVias: {
     ...baseProblem,
     defaultObstacleMargin: 0.1,

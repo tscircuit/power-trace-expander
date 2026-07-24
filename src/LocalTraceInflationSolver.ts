@@ -181,8 +181,13 @@ export class LocalTraceInflationSolver extends BaseSolver {
     const trace = this.traces[item.traceIndex];
     if (!trace) return;
     const connection = this.findConnectionForTrace(trace);
-    if (!connection) return;
-    const traceWidth = this.resolveNominalTraceWidth(connection);
+    // Locally routed subcircuits can contribute fixed traces without exposing
+    // their connections in the parent routing problem. Their routed geometry
+    // still gives us stable endpoints and a conservative nominal width, so
+    // they are safe to shove without inventing connectivity metadata.
+    const traceWidth = connection
+      ? this.resolveNominalTraceWidth(connection)
+      : this.getTraceNominalWidth(trace);
     if (
       traceWidth >=
       (this.inputProblem.pushOnlyNominalWidthsBelow ??
@@ -484,6 +489,14 @@ export class LocalTraceInflationSolver extends BaseSolver {
         connection.width ??
         this.inputProblem.simpleRouteJson.nominalTraceWidth ??
         this.inputProblem.simpleRouteJson.minTraceWidth,
+      this.inputProblem.simpleRouteJson.minTraceWidth,
+    );
+  }
+
+  private getTraceNominalWidth(trace: SimplifiedPcbTrace) {
+    return trace.route.reduce(
+      (width, point) =>
+        point.route_type === "wire" ? Math.max(width, point.width) : width,
       this.inputProblem.simpleRouteJson.minTraceWidth,
     );
   }

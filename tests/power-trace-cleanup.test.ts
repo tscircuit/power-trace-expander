@@ -125,6 +125,42 @@ test("relocates a routed via out of a connected pad", async () => {
   });
 });
 
+test("shoves a connectionless local trace to escape a connected pad", async () => {
+  const problem = structuredClone(
+    cleanupCases.connectedPadViaBehindConnectionlessTrace,
+  );
+  const beforeBlocker = structuredClone(problem.traces[1]!.route);
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+  });
+
+  solver.solve();
+
+  const output = solver.getOutput();
+  const routeVia = getRouteVias(output[0]!.route)[0]!;
+  const index = new SpatialObstacleIndex(problem, output, 0);
+  expect(solver.stats.committedPushedViaRepairCount).toBe(1);
+  expect(solver.stats.unresolvedViaCount).toBe(0);
+  expect(output[1]!.route).not.toEqual(beforeBlocker);
+  expect(
+    index.collidesVia({
+      point: routeVia,
+      layers: index.boardLayers,
+      padDiameter: routeVia.via_diameter ?? 0.6,
+      holeDiameter: routeVia.via_hole_diameter ?? 0.3,
+      connectionNames: ["POWER"],
+      ignoreTraceIndex: 0,
+      ignoreRouteRange: { start: 1, end: 3 },
+      blockSameNetObstacles: true,
+      sameNetObstacleClearance: 0,
+    }),
+  ).toBe(false);
+  await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
+    svgName: "connectionless-local-trace-via-shove",
+  });
+});
+
 test("separates clustered same-net routed vias", async () => {
   const problem = structuredClone(cleanupCases.clusteredSameNetVias);
   const solver = new PowerTraceCleanupSolver({
