@@ -780,12 +780,89 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       return;
     }
 
-    const candidates = this.createCandidates({
+    const baseCandidates = this.createCandidates({
       kind: "via-pair",
       traceIndex,
       startIndex,
       endIndex,
     });
+    const candidateWidth =
+      baseCandidates[0]?.width ?? Math.max(start.width, end.width);
+    const padClearance =
+      baseCandidates[0]?.padClearance ??
+      this.getCandidatePadClearance(
+        "via-pair",
+        traceIndex,
+        startIndex,
+        endIndex,
+      );
+    const endpointCollidesWithPad = (routeIndex: number) => {
+      const point = trace.route[routeIndex];
+      if (!isWire(point)) return false;
+      return this.obstacleIndex
+        .findCollisions({
+          start: point,
+          end: point,
+          layer: point.layer,
+          width: candidateWidth,
+          connectionNames: this.getTraceConnectionNames(trace),
+          ignoreTraceIndex: traceIndex,
+          ignoreRouteRange: {
+            start: Math.max(0, startIndex - 1),
+            end: Math.min(trace.route.length - 1, endIndex + 1),
+          },
+          obstacleClearance: padClearance,
+        })
+        .some(
+          (collision) =>
+            collision.kind === "obstacle" && collision.obstacleKind === "pad",
+        );
+    };
+
+    // A layer detour can place its vias just inside a pad's clearance
+    // envelope even though the neighboring same-layer anchors have a clear
+    // path around that pad. Give cleanup those anchors as alternate route
+    // boundaries instead of asking the grid router to start from an invalid
+    // endpoint.
+    const priorStart = trace.route[startIndex - 1];
+    const nextEnd = trace.route[endIndex + 1];
+    const expandedStartIndex =
+      baseCandidates.length > 0 &&
+      endpointCollidesWithPad(startIndex) &&
+      isWire(priorStart) &&
+      priorStart.layer === start.layer
+        ? startIndex - 1
+        : startIndex;
+    const expandedEndIndex =
+      baseCandidates.length > 0 &&
+      endpointCollidesWithPad(endIndex) &&
+      isWire(nextEnd) &&
+      nextEnd.layer === end.layer
+        ? endIndex + 1
+        : endIndex;
+    const intervals = [
+      { startIndex, endIndex },
+      { startIndex: expandedStartIndex, endIndex },
+      { startIndex, endIndex: expandedEndIndex },
+      { startIndex: expandedStartIndex, endIndex: expandedEndIndex },
+    ].filter(
+      (interval, index, allIntervals) =>
+        allIntervals.findIndex(
+          (candidate) =>
+            candidate.startIndex === interval.startIndex &&
+            candidate.endIndex === interval.endIndex,
+        ) === index,
+    );
+    const candidates = intervals.flatMap((interval) =>
+      interval.startIndex === startIndex && interval.endIndex === endIndex
+        ? baseCandidates
+        : this.createCandidates({
+            kind: "via-pair",
+            traceIndex,
+            startIndex: interval.startIndex,
+            endIndex: interval.endIndex,
+          }),
+    );
     if (candidates.length === 0) return;
     this.beginCandidates(candidates, "scan-via-pairs", true);
   }

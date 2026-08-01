@@ -41,6 +41,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.4",
+    "@tscircuit/capacity-autorouter": "0.0.705",
     "@tscircuit/core": "^0.0.1470",
     "@types/bun": "latest",
     "@types/react": "^19.2.17",
