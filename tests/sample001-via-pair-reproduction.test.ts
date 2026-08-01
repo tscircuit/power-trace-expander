@@ -2,6 +2,7 @@ import { expect, setDefaultTimeout, test } from "bun:test";
 import "graphics-debug/matcher";
 import {
   getSample001ViaPairReproduction,
+  getSample001ViaPairGraphics,
   SAMPLE001_TARGET_TRACE_ID,
   SAMPLE001_UNNECESSARY_VIA_PAIR,
 } from "../fixtures/sample001-via-pair/getSample001ViaPairReproduction";
@@ -51,4 +52,13 @@ test("reproduces the sample001 via pair created before cleanup", async () => {
     .getOutput()
     .find((trace) => trace.pcb_trace_id === SAMPLE001_TARGET_TRACE_ID)!;
   expect(getViaCoordinates(outputTargetTrace)).toEqual([]);
+  await expect(
+    getSample001ViaPairGraphics({
+      problem,
+      targetTrace: outputTargetTrace,
+      title: "sample001 after cleanup: via pair removed",
+    }),
+  ).toMatchGraphicsSvg(import.meta.path, {
+    svgName: "sample001-via-pair-after-cleanup",
+  });
 });
