@@ -30,6 +30,38 @@ const getFocusedTrace = (trace: SimplifiedPcbTrace): SimplifiedPcbTrace => {
   };
 };
 
+export const getSample001ViaPairGraphics = ({
+  problem,
+  targetTrace,
+  title,
+}: {
+  problem: SimpleRouteJson;
+  targetTrace: SimplifiedPcbTrace;
+  title: string;
+}) => {
+  const focusedProblem: SimpleRouteJson = {
+    ...problem,
+    bounds: FOCUS_BOUNDS,
+    connections: [],
+    obstacles: problem.obstacles.filter((obstacle) => {
+      const halfWidth = obstacle.width / 2;
+      const halfHeight = obstacle.height / 2;
+      return (
+        obstacle.center.x + halfWidth >= FOCUS_BOUNDS.minX &&
+        obstacle.center.x - halfWidth <= FOCUS_BOUNDS.maxX &&
+        obstacle.center.y + halfHeight >= FOCUS_BOUNDS.minY &&
+        obstacle.center.y - halfHeight <= FOCUS_BOUNDS.maxY
+      );
+    }),
+  };
+
+  return getPowerTraceGraphics({
+    problem: focusedProblem,
+    traces: [getFocusedTrace(targetTrace)],
+    title,
+  });
+};
+
 export const getSample001ViaPairReproduction = () => {
   const problem = structuredClone(sample001Input) as unknown as SimpleRouteJson;
   const solver = new PowerTraceExpanderSolver(problem);
@@ -47,29 +79,13 @@ export const getSample001ViaPairReproduction = () => {
     throw new Error(`Missing sample001 trace ${SAMPLE001_TARGET_TRACE_ID}`);
   }
 
-  const focusedProblem: SimpleRouteJson = {
-    ...problem,
-    bounds: FOCUS_BOUNDS,
-    connections: [],
-    obstacles: problem.obstacles.filter((obstacle) => {
-      const halfWidth = obstacle.width / 2;
-      const halfHeight = obstacle.height / 2;
-      return (
-        obstacle.center.x + halfWidth >= FOCUS_BOUNDS.minX &&
-        obstacle.center.x - halfWidth <= FOCUS_BOUNDS.maxX &&
-        obstacle.center.y + halfHeight >= FOCUS_BOUNDS.minY &&
-        obstacle.center.y - halfHeight <= FOCUS_BOUNDS.maxY
-      );
-    }),
-  };
-
   return {
     problem,
     solver,
     targetTrace,
-    graphics: getPowerTraceGraphics({
-      problem: focusedProblem,
-      traces: [getFocusedTrace(targetTrace)],
+    graphics: getSample001ViaPairGraphics({
+      problem,
+      targetTrace,
       title: "sample001 before cleanup: unnecessary via pair",
     }),
   };
