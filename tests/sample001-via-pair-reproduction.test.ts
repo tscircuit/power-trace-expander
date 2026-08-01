@@ -50,7 +50,5 @@ test("reproduces the sample001 via pair created before cleanup", async () => {
   const outputTargetTrace = solver
     .getOutput()
     .find((trace) => trace.pcb_trace_id === SAMPLE001_TARGET_TRACE_ID)!;
-  expect(getViaCoordinates(outputTargetTrace)).toEqual(
-    SAMPLE001_UNNECESSARY_VIA_PAIR,
-  );
+  expect(getViaCoordinates(outputTargetTrace)).toEqual([]);
 });
