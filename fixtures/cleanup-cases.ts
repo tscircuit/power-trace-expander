@@ -102,6 +102,46 @@ export const cleanupCases = {
     ],
   },
 
+  sample001ViaPairPadDetour: {
+    ...baseProblem,
+    bounds: { minX: -12, maxX: 0, minY: -17, maxY: -7 },
+    defaultObstacleMargin: 0.1,
+    minTraceToPadEdgeClearance: 0.1,
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 1.2,
+        pointsToConnect: [
+          { x: -10.37, y: -14.27, layer: "top" },
+          { x: -5.80006395, y: -10.5, layer: "top" },
+        ],
+      },
+    ],
+    obstacles: [
+      {
+        type: "rect",
+        obstacleId: "pcb_smtpad_37",
+        center: { x: -7.53003695, y: -9.689973 },
+        width: 1.5999968,
+        height: 3.1999936,
+        layers: ["top"],
+        connectedTo: ["pcb_smtpad_37", "SIGNAL"],
+      },
+    ],
+    traces: [
+      powerTrace([
+        wire(-10.37, -14.27, 1.2),
+        wire(-8.1, -12, 1.2),
+        via(-8.1, -12),
+        wire(-8.1, -12, 1.2, "bottom"),
+        wire(-6, -10.5, 1.2, "bottom"),
+        via(-6, -10.5),
+        wire(-6, -10.5, 1.2),
+        wire(-5.80006395, -10.5, 1.2),
+      ]),
+    ],
+  },
+
   clearanceShoveSimplification: {
     ...baseProblem,
     connections: [

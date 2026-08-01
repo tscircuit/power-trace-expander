@@ -54,6 +54,26 @@ test("uses an octilinear obstacle-aware detour to remove a via pair", async () =
   });
 });
 
+test("removes the sample001 via pair beside a Pico pad", async () => {
+  const problem = structuredClone(cleanupCases.sample001ViaPairPadDetour);
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+  });
+
+  solver.solve();
+
+  const output = solver.getOutput();
+  expect(solver.solved).toBe(true);
+  expect(
+    output[0]!.route.filter((point) => point.route_type === "via"),
+  ).toHaveLength(0);
+  expect(solver.stats.viaPairCountRemoved).toBe(1);
+  await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
+    svgName: "sample001-via-pair-pad-detour",
+  });
+});
+
 test("shoves a signal to add clearance before octilinear simplification", async () => {
   const problem = structuredClone(cleanupCases.clearanceShoveSimplification);
   const beforeSignal = structuredClone(problem.traces[1]!.route);
