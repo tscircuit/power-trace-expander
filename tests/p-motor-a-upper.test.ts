@@ -52,12 +52,12 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
   expect(before.nominalCoverage).toBe(0);
-  // Keeping the layer-change via out of the terminal pad requires a short
-  // neck from the pad edge. Nearly all of the route remains nominal-width.
+  // The final guard keeps the layer-change via out of the terminal pad and
+  // constrains the short pad escape to the pad's physical cross-section.
   expect(after.nominalCoverage).toBeGreaterThan(0.97);
-  expect(after.averageWidth).toBeGreaterThan(0.99);
-  expect(after.normalizedWidthDeficit).toBeLessThan(0.01);
-  expect(after.coverageByFraction[0.5]).toBe(1);
+  expect(after.averageWidth).toBeGreaterThan(0.985);
+  expect(after.normalizedWidthDeficit).toBeLessThan(0.015);
+  expect(after.coverageByFraction[0.5]).toBeGreaterThan(0.98);
   expect(after.totalLength / before.totalLength).toBeLessThan(1.3);
   expect(bottomLength).toBeGreaterThan(10);
   expect(

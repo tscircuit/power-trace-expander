@@ -133,6 +133,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   padClearanceRerouteCount = 0;
   unresolvedPadClearanceCount = 0;
   repairedTraceClearanceSegmentCount = 0;
+  repairedPadNeckSegmentCount = 0;
   unresolvedTraceClearanceSegmentCount = 0;
   initialPadClearanceViolationCount = 0;
   remainingPadClearanceViolationCount = 0;
@@ -934,6 +935,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       const stats = solver.stats as Record<string, unknown>;
       this.repairedTraceClearanceSegmentCount = Number(
         stats.repairedSegmentCount ?? 0,
+      );
+      this.repairedPadNeckSegmentCount = Number(
+        stats.repairedPadNeckSegmentCount ?? 0,
       );
       this.unresolvedTraceClearanceSegmentCount = Number(
         stats.unresolvedSegmentCount ?? 0,
@@ -2092,6 +2096,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       unresolvedPadClearanceCount: this.unresolvedPadClearanceCount,
       repairedTraceClearanceSegmentCount:
         this.repairedTraceClearanceSegmentCount,
+      repairedPadNeckSegmentCount: this.repairedPadNeckSegmentCount,
       unresolvedTraceClearanceSegmentCount:
         this.unresolvedTraceClearanceSegmentCount,
       initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
