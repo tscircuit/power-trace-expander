@@ -1,4 +1,63 @@
-import type { SimpleRouteJson, SimplifiedPcbTrace } from "@tscircuit/core";
+import type {
+  Obstacle as CoreObstacle,
+  SimpleRouteConnection as CoreSimpleRouteConnection,
+  SimpleRouteJson as CoreSimpleRouteJson,
+  SimplifiedPcbTrace as CoreSimplifiedPcbTrace,
+} from "@tscircuit/core";
+
+type CoreRoutePoint = CoreSimplifiedPcbTrace["route"][number];
+type CoreViaRoutePoint = Extract<CoreRoutePoint, { route_type: "via" }>;
+
+export type SimplifiedPcbTrace = CoreSimplifiedPcbTrace & {
+  source_trace_id?: string;
+  rootConnectionName?: string;
+  mergedConnectionNames?: string[];
+  connectsTo?: string[];
+  route: Array<
+    | Exclude<CoreRoutePoint, { route_type: "via" }>
+    | (CoreViaRoutePoint & {
+        via_diameter?: number;
+        via_hole_diameter?: number;
+      })
+  >;
+};
+
+type CoreConnectionPoint =
+  CoreSimpleRouteConnection["pointsToConnect"][number];
+
+export type SimpleRouteConnection = CoreSimpleRouteConnection & {
+  source_trace_id?: string;
+  rootConnectionName?: string;
+  mergedConnectionNames?: string[];
+  nominalTraceWidth?: number;
+  width?: number;
+  pointsToConnect: Array<
+    CoreConnectionPoint & {
+      pointId?: string;
+      pcb_port_id?: string;
+    }
+  >;
+};
+
+export type Obstacle = CoreObstacle & {
+  ccwRotationDegrees?: number;
+};
+
+export type SimpleRouteJson = CoreSimpleRouteJson & {
+  nominalTraceWidth?: number;
+  minViaDiameter?: number;
+  minViaHoleDiameter?: number;
+  minViaPadDiameter?: number;
+  min_via_hole_diameter?: number;
+  min_via_pad_diameter?: number;
+  defaultObstacleMargin?: number;
+  minTraceToPadEdgeClearance?: number;
+  minBoardEdgeClearance?: number;
+  minViaHoleEdgeToViaHoleEdgeClearance?: number;
+  connections: SimpleRouteConnection[];
+  obstacles: Obstacle[];
+  traces?: SimplifiedPcbTrace[];
+};
 
 export type Point = { x: number; y: number };
 

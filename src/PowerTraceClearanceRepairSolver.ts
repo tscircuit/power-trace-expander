@@ -1,10 +1,13 @@
-import type { SimpleRouteJson, SimplifiedPcbTrace } from "@tscircuit/core";
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import { WIDTH_EPSILON } from "./geometry";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
-import type { WireRoutePoint } from "./types";
+import type {
+  SimpleRouteJson,
+  SimplifiedPcbTrace,
+  WireRoutePoint,
+} from "./types";
 
 export type PowerTraceClearanceRepairProblem = {
   simpleRouteJson: SimpleRouteJson;

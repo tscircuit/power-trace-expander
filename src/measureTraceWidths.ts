@@ -2,7 +2,7 @@ import type {
   SimpleRouteConnection,
   SimpleRouteJson,
   SimplifiedPcbTrace,
-} from "@tscircuit/core";
+} from "./types";
 
 export const TRACE_WIDTH_COVERAGE_FRACTIONS = [
   0.25, 0.5, 0.75, 0.875, 0.9, 1,

@@ -1,7 +1,3 @@
-import type {
-  SimpleRouteConnection,
-  SimplifiedPcbTrace,
-} from "@tscircuit/core";
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
@@ -23,6 +19,8 @@ import type {
   InflationCorridorSegment,
   LocalTraceInflationOutput,
   LocalTraceInflationProblem,
+  SimpleRouteConnection,
+  SimplifiedPcbTrace,
   WireRoutePoint,
 } from "./types";
 

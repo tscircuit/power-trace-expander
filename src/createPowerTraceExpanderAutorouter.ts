@@ -3,12 +3,14 @@ import type {
   AutorouterErrorEvent,
   AutorouterProgressEvent,
   GenericLocalAutorouter,
-  SimpleRouteJson,
-  SimplifiedPcbTrace,
 } from "@tscircuit/core";
 import type { GraphicsObject } from "graphics-debug";
 import { PowerTraceExpanderSolver } from "./PowerTraceExpanderSolver";
-import type { PowerTraceExpanderOptions } from "./types";
+import type {
+  PowerTraceExpanderOptions,
+  SimpleRouteJson,
+  SimplifiedPcbTrace,
+} from "./types";
 
 type CompatibleSolver = {
   solved: boolean;
@@ -118,7 +120,9 @@ export class SolverAutorouterAdapter<TSolver extends CompatibleSolver>
       if (this.stopped) return;
       const elapsedMs = Math.max(1, Date.now() - startTime);
       this.cycleCount += 1;
-      this.emit("progress", {
+      const progressEvent: AutorouterProgressEvent & {
+        iterationsPerSecond: number;
+      } = {
         type: "progress",
         steps: this.cycleCount,
         progress: this.solver.progress,
@@ -126,7 +130,8 @@ export class SolverAutorouterAdapter<TSolver extends CompatibleSolver>
         iterationsPerSecond:
           ((this.solver.iterations - startIterations) / elapsedMs) * 1_000,
         debugGraphics: this.solver.preview(),
-      });
+      };
+      this.emit("progress", progressEvent);
 
       if (this.solver.solved || this.solver.failed) {
         this.finish();
