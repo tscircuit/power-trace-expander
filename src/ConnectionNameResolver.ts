@@ -31,7 +31,7 @@ export class ConnectionNameResolver {
         ]),
       );
     }
-    for (const trace of traces) {
+    for (const trace of [...traces, ...(simpleRouteJson.fixedTraces ?? [])]) {
       this.unionAll(
         definedNames([
           trace.pcb_trace_id,

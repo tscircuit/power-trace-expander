@@ -99,6 +99,8 @@ export type SimpleRouteJson = {
   connections: SimpleRouteConnection[];
   obstacles: Obstacle[];
   traces?: SimplifiedPcbTrace[];
+  /** Immutable routed copper that participates in clearance checks only. */
+  fixedTraces?: SimplifiedPcbTrace[];
 };
 
 export type Point = { x: number; y: number };
