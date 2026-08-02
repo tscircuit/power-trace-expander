@@ -1,49 +1,90 @@
-import type {
-  Obstacle as CoreObstacle,
-  SimpleRouteConnection as CoreSimpleRouteConnection,
-  SimpleRouteJson as CoreSimpleRouteJson,
-  SimplifiedPcbTrace as CoreSimplifiedPcbTrace,
-} from "@tscircuit/core";
+export type WireRoutePoint = {
+  route_type: "wire";
+  x: number;
+  y: number;
+  width: number;
+  layer: string;
+  start_pcb_port_id?: string;
+  end_pcb_port_id?: string;
+};
 
-type CoreRoutePoint = CoreSimplifiedPcbTrace["route"][number];
-type CoreViaRoutePoint = Extract<CoreRoutePoint, { route_type: "via" }>;
+export type ViaRoutePoint = {
+  route_type: "via";
+  x: number;
+  y: number;
+  to_layer: string;
+  from_layer: string;
+  via_diameter?: number;
+  via_hole_diameter?: number;
+};
 
-export type SimplifiedPcbTrace = CoreSimplifiedPcbTrace & {
+export type SimplifiedPcbTrace = {
+  type: "pcb_trace";
+  pcb_trace_id: string;
+  connection_name?: string;
   source_trace_id?: string;
   rootConnectionName?: string;
   mergedConnectionNames?: string[];
   connectsTo?: string[];
   route: Array<
-    | Exclude<CoreRoutePoint, { route_type: "via" }>
-    | (CoreViaRoutePoint & {
-        via_diameter?: number;
-        via_hole_diameter?: number;
-      })
+    | WireRoutePoint
+    | ViaRoutePoint
+    | {
+        route_type: "jumper";
+        start: Point;
+        end: Point;
+        footprint: "0603" | "1206" | "1206x4_pair";
+        layer: string;
+      }
+    | {
+        route_type: "through_obstacle";
+        start: Point;
+        end: Point;
+        from_layer: string;
+        to_layer: string;
+        width: number;
+      }
   >;
 };
 
-type CoreConnectionPoint =
-  CoreSimpleRouteConnection["pointsToConnect"][number];
-
-export type SimpleRouteConnection = CoreSimpleRouteConnection & {
+export type SimpleRouteConnection = {
+  name: string;
   source_trace_id?: string;
   rootConnectionName?: string;
   mergedConnectionNames?: string[];
+  isOffBoard?: boolean;
+  netConnectionName?: string;
   nominalTraceWidth?: number;
   width?: number;
   pointsToConnect: Array<
-    CoreConnectionPoint & {
+    Point & {
+      layer: string;
+      layers?: string[];
       pointId?: string;
       pcb_port_id?: string;
     }
   >;
 };
 
-export type Obstacle = CoreObstacle & {
+export type Obstacle = {
+  obstacleId?: string;
+  componentId?: string;
+  type: "rect";
+  layers: string[];
+  zLayers?: number[];
+  center: Point;
+  width: number;
+  height: number;
   ccwRotationDegrees?: number;
+  connectedTo: string[];
+  isCopperPour?: boolean;
+  netIsAssignable?: boolean;
+  offBoardConnectsTo?: string[];
 };
 
-export type SimpleRouteJson = CoreSimpleRouteJson & {
+export type SimpleRouteJson = {
+  layerCount: number;
+  minTraceWidth: number;
   nominalTraceWidth?: number;
   minViaDiameter?: number;
   minViaHoleDiameter?: number;
@@ -54,22 +95,13 @@ export type SimpleRouteJson = CoreSimpleRouteJson & {
   minTraceToPadEdgeClearance?: number;
   minBoardEdgeClearance?: number;
   minViaHoleEdgeToViaHoleEdgeClearance?: number;
+  bounds: { minX: number; maxX: number; minY: number; maxY: number };
   connections: SimpleRouteConnection[];
   obstacles: Obstacle[];
   traces?: SimplifiedPcbTrace[];
 };
 
 export type Point = { x: number; y: number };
-
-export type WireRoutePoint = Extract<
-  SimplifiedPcbTrace["route"][number],
-  { route_type: "wire" }
->;
-
-export type ViaRoutePoint = Extract<
-  SimplifiedPcbTrace["route"][number],
-  { route_type: "via" }
->;
 
 export type CopperRoutePoint = WireRoutePoint | ViaRoutePoint;
 

@@ -3,13 +3,14 @@ import type {
   AutorouterErrorEvent,
   AutorouterProgressEvent,
   GenericLocalAutorouter,
+  SimpleRouteJson,
+  SimplifiedPcbTrace,
 } from "@tscircuit/core";
 import type { GraphicsObject } from "graphics-debug";
 import { PowerTraceExpanderSolver } from "./PowerTraceExpanderSolver";
 import type {
+  PowerTraceExpanderInput,
   PowerTraceExpanderOptions,
-  SimpleRouteJson,
-  SimplifiedPcbTrace,
 } from "./types";
 
 type CompatibleSolver = {
@@ -176,11 +177,15 @@ export class PowerTraceExpanderAutorouter extends SolverAutorouterAdapter<PowerT
     simpleRouteJson: SimpleRouteJson,
     options: PowerTraceExpanderOptions = {},
   ) {
-    const solver = new PowerTraceExpanderSolver(simpleRouteJson, options);
+    const solver = new PowerTraceExpanderSolver(
+      simpleRouteJson as unknown as PowerTraceExpanderInput,
+      options,
+    );
     super({
       input: simpleRouteJson,
       solver,
-      getOutput: (activeSolver) => activeSolver.getOutput(),
+      getOutput: (activeSolver) =>
+        activeSolver.getOutput() as SimplifiedPcbTrace[],
       getPhase: (activeSolver) => String(activeSolver.stats.phase ?? "fix"),
     });
   }
