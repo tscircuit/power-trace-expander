@@ -71,6 +71,7 @@ export class SpatialObstacleIndex {
       ...simpleRouteJson.obstacles.flatMap((obstacle) =>
         approximateObstacleWithRects(obstacle),
       ),
+      ...this.createTraceItems(simpleRouteJson.fixedTraces ?? [], true),
       ...this.createTraceItems(traces),
       ...extraItems,
     ];
@@ -96,11 +97,15 @@ export class SpatialObstacleIndex {
     this.index?.finish();
   }
 
-  private createTraceItems(traces: SimplifiedPcbTrace[]) {
+  private createTraceItems(
+    traces: SimplifiedPcbTrace[],
+    fixed = false,
+  ): IndexedObstacle[] {
     const items: IndexedObstacle[] = [];
     for (let traceIndex = 0; traceIndex < traces.length; traceIndex++) {
       const trace = traces[traceIndex]!;
-      const isDynamicTrace = traceIndex === this.dynamicTraceIndex;
+      const indexedTraceIndex = fixed ? undefined : traceIndex;
+      const isDynamicTrace = !fixed && traceIndex === this.dynamicTraceIndex;
       const connectionNames = [
         trace.connection_name,
         trace.source_trace_id,
@@ -124,7 +129,7 @@ export class SpatialObstacleIndex {
             layers: this.boardLayers,
             kind: "via",
             connectionNames,
-            traceIndex,
+            traceIndex: indexedTraceIndex,
             routeStartIndex: routeIndex,
             routeEndIndex: routeIndex,
             viaHoleDiameter:
@@ -162,7 +167,7 @@ export class SpatialObstacleIndex {
               layers: [point.layer],
               kind: "trace",
               connectionNames,
-              traceIndex,
+              traceIndex: indexedTraceIndex,
               routeStartIndex: routeIndex,
               routeEndIndex: routeIndex + 1,
             },
