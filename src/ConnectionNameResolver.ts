@@ -1,4 +1,4 @@
-import type { SimpleRouteJson, SimplifiedPcbTrace } from "@tscircuit/core";
+import type { SimpleRouteJson, SimplifiedPcbTrace } from "./types";
 
 const definedNames = (names: Array<string | null | undefined>) =>
   names.filter((name): name is string => Boolean(name));

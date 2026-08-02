@@ -1,4 +1,3 @@
-import type { SimpleRouteJson, SimplifiedPcbTrace } from "@tscircuit/core";
 import Flatbush from "flatbush";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
@@ -12,6 +11,8 @@ import {
 import type {
   CollisionQuery,
   IndexedObstacle,
+  SimpleRouteJson,
+  SimplifiedPcbTrace,
   ViaCollisionQuery,
 } from "./types";
 

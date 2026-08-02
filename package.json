@@ -33,7 +33,7 @@
     "graphics-debug": "^0.0.96"
   },
   "peerDependencies": {
-    "@tscircuit/core": "^0.0.1470",
+    "@tscircuit/core": ">=0.0.337 <0.1.0",
     "typescript": "^5"
   },
   "overrides": {

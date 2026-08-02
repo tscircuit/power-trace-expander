@@ -1,7 +1,3 @@
-import type {
-  SimpleRouteConnection,
-  SimplifiedPcbTrace,
-} from "@tscircuit/core";
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
@@ -25,6 +21,8 @@ import type {
   PowerTraceExpanderInput,
   PowerTraceExpanderOptions,
   PowerTraceExpanderOutput,
+  SimpleRouteConnection,
+  SimplifiedPcbTrace,
   ViaRoutePoint,
   WireRoutePoint,
 } from "./types";

@@ -8,7 +8,10 @@ import type {
 } from "@tscircuit/core";
 import type { GraphicsObject } from "graphics-debug";
 import { PowerTraceExpanderSolver } from "./PowerTraceExpanderSolver";
-import type { PowerTraceExpanderOptions } from "./types";
+import type {
+  PowerTraceExpanderInput,
+  PowerTraceExpanderOptions,
+} from "./types";
 
 type CompatibleSolver = {
   solved: boolean;
@@ -118,7 +121,9 @@ export class SolverAutorouterAdapter<TSolver extends CompatibleSolver>
       if (this.stopped) return;
       const elapsedMs = Math.max(1, Date.now() - startTime);
       this.cycleCount += 1;
-      this.emit("progress", {
+      const progressEvent: AutorouterProgressEvent & {
+        iterationsPerSecond: number;
+      } = {
         type: "progress",
         steps: this.cycleCount,
         progress: this.solver.progress,
@@ -126,7 +131,8 @@ export class SolverAutorouterAdapter<TSolver extends CompatibleSolver>
         iterationsPerSecond:
           ((this.solver.iterations - startIterations) / elapsedMs) * 1_000,
         debugGraphics: this.solver.preview(),
-      });
+      };
+      this.emit("progress", progressEvent);
 
       if (this.solver.solved || this.solver.failed) {
         this.finish();
@@ -171,11 +177,15 @@ export class PowerTraceExpanderAutorouter extends SolverAutorouterAdapter<PowerT
     simpleRouteJson: SimpleRouteJson,
     options: PowerTraceExpanderOptions = {},
   ) {
-    const solver = new PowerTraceExpanderSolver(simpleRouteJson, options);
+    const solver = new PowerTraceExpanderSolver(
+      simpleRouteJson as unknown as PowerTraceExpanderInput,
+      options,
+    );
     super({
       input: simpleRouteJson,
       solver,
-      getOutput: (activeSolver) => activeSolver.getOutput(),
+      getOutput: (activeSolver) =>
+        activeSolver.getOutput() as SimplifiedPcbTrace[],
       getPhase: (activeSolver) => String(activeSolver.stats.phase ?? "fix"),
     });
   }
