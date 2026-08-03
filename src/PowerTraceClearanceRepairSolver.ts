@@ -13,6 +13,8 @@ import type {
 export type PowerTraceClearanceRepairProblem = {
   simpleRouteJson: SimpleRouteJson;
   traces: SimplifiedPcbTrace[];
+  /** Restrict repair to these traces while retaining all traces as obstacles. */
+  traceIndices?: readonly number[];
 };
 
 const isWire = (
@@ -40,6 +42,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
 
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly minimumTraceWidth: number;
+  private readonly traceIndices: number[];
 
   constructor(inputProblem: PowerTraceClearanceRepairProblem) {
     super();
@@ -50,16 +53,23 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       this.traces,
     );
     this.minimumTraceWidth = inputProblem.simpleRouteJson.minTraceWidth;
+    const requestedIndices = inputProblem.traceIndices
+      ? new Set(inputProblem.traceIndices)
+      : null;
+    this.traceIndices = this.traces.flatMap((_, traceIndex) =>
+      !requestedIndices || requestedIndices.has(traceIndex) ? [traceIndex] : [],
+    );
     this.obstacleIndex = this.createConservativeObstacleIndex();
-    const initialSegmentCount = this.traces.reduce(
-      (count, trace) => count + Math.max(0, trace.route.length - 1),
+    const initialSegmentCount = this.traceIndices.reduce(
+      (count, traceIndex) =>
+        count + Math.max(0, this.traces[traceIndex]!.route.length - 1),
       0,
     );
     // A pad-boundary repair inserts two points and rewinds one segment. Leave
     // enough headroom to visit those new segments and both trace terminals.
     this.MAX_ITERATIONS = Math.max(
       10,
-      initialSegmentCount * 8 + this.traces.length * 2,
+      initialSegmentCount * 8 + this.traceIndices.length * 2,
     );
     this.stats = this.createStats();
   }
@@ -69,7 +79,9 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   }
 
   override _step() {
-    const trace = this.traces[this.traceCursor];
+    const traceIndex = this.traceIndices[this.traceCursor];
+    const trace =
+      traceIndex === undefined ? undefined : this.traces[traceIndex];
     if (!trace) {
       this.solved = true;
       this.stats = this.createStats();
@@ -97,7 +109,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       layer: start.layer,
       width: currentWidth,
       connectionNames: this.getTraceConnectionNames(trace),
-      ignoreTraceIndex: this.traceCursor,
+      ignoreTraceIndex: traceIndex,
       ignoreRouteRange: { start: routeIndex, end: routeIndex + 1 },
     };
     if (this.repairConnectedPadNeck(trace, routeIndex, padQuery)) {
@@ -372,7 +384,9 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   }
 
   private segmentHasForeignTraceCollision(routeIndex: number, width: number) {
-    const trace = this.traces[this.traceCursor];
+    const traceIndex = this.traceIndices[this.traceCursor];
+    const trace =
+      traceIndex === undefined ? undefined : this.traces[traceIndex];
     const start = trace?.route[routeIndex];
     const end = trace?.route[routeIndex + 1];
     if (!trace || !isWire(start) || !isWire(end) || start.layer !== end.layer) {
@@ -385,7 +399,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
         layer: start.layer,
         width,
         connectionNames: this.getTraceConnectionNames(trace),
-        ignoreTraceIndex: this.traceCursor,
+        ignoreTraceIndex: traceIndex,
         ignoreRouteRange: {
           start: routeIndex,
           end: routeIndex + 1,
@@ -395,7 +409,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
         (collision) =>
           collision.kind === "trace" &&
           collision.traceIndex !== undefined &&
-          collision.traceIndex !== this.traceCursor,
+          collision.traceIndex !== traceIndex,
       );
   }
 
@@ -435,7 +449,8 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     return {
       phase: this.solved ? "complete" : "repair-trace-clearance",
       traceCursor: this.traceCursor,
-      traceCount: this.traces.length,
+      traceCount: this.traceIndices.length,
+      traceIndex: this.traceIndices[this.traceCursor],
       routeCursor: this.routeCursor,
       repairedSegmentCount: this.repairedSegmentCount,
       repairedPadNeckSegmentCount: this.repairedPadNeckSegmentCount,
@@ -446,8 +461,8 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   }
 
   computeProgress() {
-    if (this.traces.length === 0) return 1;
-    return Math.min(0.99, this.traceCursor / this.traces.length);
+    if (this.traceIndices.length === 0) return 1;
+    return Math.min(0.99, this.traceCursor / this.traceIndices.length);
   }
 
   override getConstructorParams() {
@@ -475,7 +490,8 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
         lines.push({
           points: [start, end],
           strokeColor:
-            traceIndex === this.traceCursor && routeIndex === this.routeCursor
+            traceIndex === this.traceIndices[this.traceCursor] &&
+            routeIndex === this.routeCursor
               ? "#ff7400"
               : start.layer === "bottom"
                 ? "#376fc4"

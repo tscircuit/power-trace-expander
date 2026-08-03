@@ -923,6 +923,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeSubSolver = new PowerTraceClearanceRepairSolver({
       simpleRouteJson: this.inputProblem,
       traces: this.traces,
+      traceIndices: this.traceOrder,
     });
   }
 
