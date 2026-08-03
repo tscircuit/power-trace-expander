@@ -113,6 +113,11 @@ export type PowerTraceExpanderOptions = {
   /** Restrict the top-level scan while still allowing nearby traces to move. */
   onlyConnectionNames?: readonly string[];
   /**
+   * Allow multilayer reroutes that introduce new vias. Defaults to true.
+   * Disable this when expansion must preserve or reduce the input via count.
+   */
+  allowNewVias?: boolean;
+  /**
    * Preferred edge clearance from power copper to unrelated pads. Defaults
    * to half of each power trace's nominal width.
    */

@@ -442,6 +442,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     segmentIndex: number,
   ) {
     if (
+      this.options.allowNewVias === false ||
       this.inputProblem.layerCount < 2 ||
       this.nominalTraceWidth < 0.5 - WIDTH_EPSILON
     ) {
