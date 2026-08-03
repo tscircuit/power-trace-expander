@@ -11,10 +11,16 @@ import {
 import type {
   CollisionQuery,
   IndexedObstacle,
+  Obstacle,
   SimpleRouteJson,
   SimplifiedPcbTrace,
   ViaCollisionQuery,
 } from "./types";
+
+type ConnectedPad = {
+  obstacle: Obstacle;
+  canonicalConnectionNames: ReadonlySet<string>;
+};
 
 const getBoardLayers = (layerCount: number) => [
   "top",
@@ -37,6 +43,7 @@ export class SpatialObstacleIndex {
   private readonly index: Flatbush | null;
   private readonly connectionNameSets: ReadonlySet<string>[];
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly connectedPads: ConnectedPad[];
   private readonly dynamicTraceIndex?: number;
 
   constructor(
@@ -85,11 +92,30 @@ export class SpatialObstacleIndex {
           : maximum,
       this.defaultViaHoleDiameter,
     );
+    this.connectionNameResolver = connectionNameResolver;
     this.connectionNameSets = this.items.map(
       (item) =>
         new Set(connectionNameResolver.canonicalize(item.connectionNames)),
     );
-    this.connectionNameResolver = connectionNameResolver;
+    this.connectedPads = simpleRouteJson.obstacles.flatMap((obstacle) => {
+      if (
+        !obstacle.connectedTo.some(
+          (name) =>
+            name.startsWith("pcb_smtpad_") ||
+            name.startsWith("pcb_plated_hole_"),
+        )
+      ) {
+        return [];
+      }
+      return [
+        {
+          obstacle,
+          canonicalConnectionNames: new Set(
+            connectionNameResolver.canonicalize(obstacle.connectedTo),
+          ),
+        },
+      ];
+    });
     this.index = this.items.length > 0 ? new Flatbush(this.items.length) : null;
     for (const item of this.items) {
       this.index!.add(item.minX, item.minY, item.maxX, item.maxY);
@@ -201,6 +227,177 @@ export class SpatialObstacleIndex {
       }
     }
     return collisions;
+  }
+
+  getConnectedPadWidthLimit(query: CollisionQuery): number | null {
+    if (
+      Math.hypot(query.end.x - query.start.x, query.end.y - query.start.y) <=
+      1e-5
+    ) {
+      return null;
+    }
+    const startLimit = this.getConnectedPadWidthLimitAtPoint(
+      query,
+      query.start,
+    );
+    const endLimit = this.getConnectedPadWidthLimitAtPoint(query, query.end);
+    if (startLimit === null) return endLimit;
+    if (endLimit === null) return startLimit;
+    return Math.min(startLimit, endLimit);
+  }
+
+  getConnectedPadWidthLimitAtPoint(
+    query: CollisionQuery,
+    point: { x: number; y: number },
+  ): number | null {
+    const padsAtPoint = this.getConnectedPadsAtPoint(query, point);
+    if (padsAtPoint.length === 0) return null;
+    return Math.max(
+      ...padsAtPoint.map(({ obstacle }) =>
+        this.getPadWidthNormalToQuery(obstacle, query),
+      ),
+    );
+  }
+
+  getConnectedPadEndpointWidthLimitAtPoint(
+    query: CollisionQuery,
+    point: { x: number; y: number },
+  ): number | null {
+    const padsAtPoint = this.getConnectedPadsAtPoint(query, point);
+    if (padsAtPoint.length === 0) return null;
+    return Math.max(
+      ...padsAtPoint.map(({ obstacle }) => {
+        const localPoint = this.getObstacleLocalPoint(point, obstacle);
+        return Math.max(
+          0,
+          2 *
+            Math.min(
+              obstacle.width / 2 - Math.abs(localPoint.x),
+              obstacle.height / 2 - Math.abs(localPoint.y),
+            ),
+        );
+      }),
+    );
+  }
+
+  getConnectedPadBoundaryPoint(
+    query: CollisionQuery,
+    endpoint: "start" | "end",
+  ): { x: number; y: number } | null {
+    const inside = endpoint === "start" ? query.start : query.end;
+    const outside = endpoint === "start" ? query.end : query.start;
+    const padsAtPoint = this.getConnectedPadsAtPoint(query, inside);
+    const pad = padsAtPoint.sort(
+      (a, b) =>
+        this.getPadWidthNormalToQuery(b.obstacle, query) -
+        this.getPadWidthNormalToQuery(a.obstacle, query),
+    )[0];
+    if (!pad || this.pointIsInsideObstacle(outside, pad.obstacle)) return null;
+    return this.getObstacleBoundaryPoint(inside, outside, pad.obstacle);
+  }
+
+  private getConnectedPadsAtPoint(
+    query: CollisionQuery,
+    point: { x: number; y: number },
+  ): ConnectedPad[] {
+    const canonicalConnectionNames = new Set(
+      this.connectionNameResolver.canonicalize(query.connectionNames),
+    );
+    return this.connectedPads.filter(
+      ({ obstacle, canonicalConnectionNames: padConnectionNames }) =>
+        obstacle.layers.includes(query.layer) &&
+        [...padConnectionNames].some((name) =>
+          canonicalConnectionNames.has(name),
+        ) &&
+        this.pointIsInsideObstacle(point, obstacle),
+    );
+  }
+
+  private pointIsInsideObstacle(
+    point: { x: number; y: number },
+    obstacle: Obstacle,
+  ) {
+    const { x: localX, y: localY } = this.getObstacleLocalPoint(
+      point,
+      obstacle,
+    );
+    return (
+      Math.abs(localX) <= obstacle.width / 2 + 1e-9 &&
+      Math.abs(localY) <= obstacle.height / 2 + 1e-9
+    );
+  }
+
+  private getObstacleLocalPoint(
+    point: { x: number; y: number },
+    obstacle: Obstacle,
+  ) {
+    const radians = -((obstacle.ccwRotationDegrees ?? 0) * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const dx = point.x - obstacle.center.x;
+    const dy = point.y - obstacle.center.y;
+    return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+  }
+
+  private getPadWidthNormalToQuery(
+    obstacle: Obstacle,
+    query: CollisionQuery,
+  ): number {
+    const dx = query.end.x - query.start.x;
+    const dy = query.end.y - query.start.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= 1e-9) return Math.min(obstacle.width, obstacle.height);
+
+    const normalX = -dy / length;
+    const normalY = dx / length;
+    const radians = -((obstacle.ccwRotationDegrees ?? 0) * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const localNormalX = normalX * cos - normalY * sin;
+    const localNormalY = normalX * sin + normalY * cos;
+    return (
+      Math.abs(localNormalX) * obstacle.width +
+      Math.abs(localNormalY) * obstacle.height
+    );
+  }
+
+  private getObstacleBoundaryPoint(
+    inside: { x: number; y: number },
+    outside: { x: number; y: number },
+    obstacle: Obstacle,
+  ): { x: number; y: number } | null {
+    const radians = -((obstacle.ccwRotationDegrees ?? 0) * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const toLocal = (point: { x: number; y: number }) => {
+      const dx = point.x - obstacle.center.x;
+      const dy = point.y - obstacle.center.y;
+      return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+    };
+    const localInside = toLocal(inside);
+    const localOutside = toLocal(outside);
+    const delta = {
+      x: localOutside.x - localInside.x,
+      y: localOutside.y - localInside.y,
+    };
+    const candidates: number[] = [];
+    if (Math.abs(delta.x) > 1e-12) {
+      const boundaryX = delta.x > 0 ? obstacle.width / 2 : -obstacle.width / 2;
+      candidates.push((boundaryX - localInside.x) / delta.x);
+    }
+    if (Math.abs(delta.y) > 1e-12) {
+      const boundaryY =
+        delta.y > 0 ? obstacle.height / 2 : -obstacle.height / 2;
+      candidates.push((boundaryY - localInside.y) / delta.y);
+    }
+    const exitT = Math.min(
+      ...candidates.filter((value) => value >= 0 && value <= 1),
+    );
+    if (!Number.isFinite(exitT)) return null;
+    return {
+      x: inside.x + (outside.x - inside.x) * exitT,
+      y: inside.y + (outside.y - inside.y) * exitT,
+    };
   }
 
   getConnectedLayersAtPoint(point: { x: number; y: number }, names: string[]) {

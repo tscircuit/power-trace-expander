@@ -4,6 +4,7 @@ import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import { WIDTH_EPSILON } from "./geometry";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
+  CollisionQuery,
   SimpleRouteJson,
   SimplifiedPcbTrace,
   WireRoutePoint,
@@ -33,6 +34,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   traceCursor = 0;
   routeCursor = 0;
   repairedSegmentCount = 0;
+  repairedPadNeckSegmentCount = 0;
   unresolvedSegmentCount = 0;
   totalWidthReduction = 0;
 
@@ -49,12 +51,15 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     );
     this.minimumTraceWidth = inputProblem.simpleRouteJson.minTraceWidth;
     this.obstacleIndex = this.createConservativeObstacleIndex();
+    const initialSegmentCount = this.traces.reduce(
+      (count, trace) => count + Math.max(0, trace.route.length - 1),
+      0,
+    );
+    // A pad-boundary repair inserts two points and rewinds one segment. Leave
+    // enough headroom to visit those new segments and both trace terminals.
     this.MAX_ITERATIONS = Math.max(
-      1,
-      this.traces.reduce(
-        (count, trace) => count + Math.max(0, trace.route.length - 1),
-        0,
-      ) * 3,
+      10,
+      initialSegmentCount * 8 + this.traces.length * 2,
     );
     this.stats = this.createStats();
   }
@@ -86,6 +91,19 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     }
 
     const currentWidth = Math.max(start.width, end.width);
+    const padQuery: CollisionQuery = {
+      start,
+      end,
+      layer: start.layer,
+      width: currentWidth,
+      connectionNames: this.getTraceConnectionNames(trace),
+      ignoreTraceIndex: this.traceCursor,
+      ignoreRouteRange: { start: routeIndex, end: routeIndex + 1 },
+    };
+    if (this.repairConnectedPadNeck(trace, routeIndex, padQuery)) {
+      this.stats = this.createStats();
+      return;
+    }
     if (!this.segmentHasForeignTraceCollision(routeIndex, currentWidth)) {
       this.stats = this.createStats();
       return;
@@ -139,6 +157,218 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     // participates in both directions after core serializes the final route.
     this.routeCursor = Math.max(0, routeIndex - 1);
     this.stats = this.createStats();
+  }
+
+  private repairConnectedPadNeck(
+    trace: SimplifiedPcbTrace,
+    routeIndex: number,
+    query: CollisionQuery,
+  ): boolean {
+    const start = trace.route[routeIndex];
+    const end = trace.route[routeIndex + 1];
+    if (!isWire(start) || !isWire(end)) return false;
+    let startLimit = this.obstacleIndex.getConnectedPadWidthLimitAtPoint(
+      query,
+      start,
+    );
+    let endLimit = this.obstacleIndex.getConnectedPadWidthLimitAtPoint(
+      query,
+      end,
+    );
+    if (routeIndex === 0) {
+      startLimit = this.getSmallerLimit(
+        startLimit,
+        this.obstacleIndex.getConnectedPadEndpointWidthLimitAtPoint(
+          query,
+          start,
+        ),
+      );
+    }
+    if (routeIndex + 1 === trace.route.length - 1) {
+      endLimit = this.getSmallerLimit(
+        endLimit,
+        this.obstacleIndex.getConnectedPadEndpointWidthLimitAtPoint(query, end),
+      );
+    }
+    // A component pad can be narrower than the board's global minimum trace
+    // width. Copper must still neck to the physical pad cross-section while it
+    // is inside the pad; the minimum applies again immediately outside it.
+    const effectiveStartLimit = startLimit;
+    const effectiveEndLimit = endLimit;
+    if (
+      (effectiveStartLimit === null ||
+        start.width <= effectiveStartLimit + WIDTH_EPSILON) &&
+      (effectiveEndLimit === null ||
+        end.width <= effectiveEndLimit + WIDTH_EPSILON)
+    ) {
+      return false;
+    }
+
+    const previousStartWidth = start.width;
+    const previousEndWidth = end.width;
+    if (effectiveStartLimit !== null) {
+      start.width = Math.min(start.width, effectiveStartLimit);
+    }
+    if (effectiveEndLimit !== null) {
+      end.width = Math.min(end.width, effectiveEndLimit);
+    }
+
+    if (effectiveStartLimit !== null && effectiveEndLimit === null) {
+      this.insertPadBoundaryTransition(
+        trace,
+        routeIndex,
+        query,
+        "start",
+        start.width,
+        previousEndWidth,
+      );
+    } else if (effectiveStartLimit === null && effectiveEndLimit !== null) {
+      this.insertPadBoundaryTransition(
+        trace,
+        routeIndex,
+        query,
+        "end",
+        end.width,
+        previousStartWidth,
+      );
+    } else if (effectiveStartLimit !== null && effectiveEndLimit !== null) {
+      const startBoundary = this.obstacleIndex.getConnectedPadBoundaryPoint(
+        query,
+        "start",
+      );
+      const endBoundary = this.obstacleIndex.getConnectedPadBoundaryPoint(
+        query,
+        "end",
+      );
+      if (startBoundary && endBoundary) {
+        this.insertPadBoundaryTransition(
+          trace,
+          routeIndex,
+          query,
+          "start",
+          start.width,
+          previousEndWidth,
+        );
+        this.insertPadBoundaryTransition(
+          trace,
+          routeIndex + 2,
+          query,
+          "end",
+          end.width,
+          previousStartWidth,
+        );
+      }
+    }
+
+    this.totalWidthReduction +=
+      previousStartWidth - start.width + (previousEndWidth - end.width);
+    this.repairedPadNeckSegmentCount++;
+    this.obstacleIndex = this.createConservativeObstacleIndex();
+    this.routeCursor = Math.max(0, routeIndex - 1);
+    return true;
+  }
+
+  private getSmallerLimit(a: number | null, b: number | null): number | null {
+    if (a === null) return b;
+    if (b === null) return a;
+    return Math.min(a, b);
+  }
+
+  private insertPadBoundaryTransition(
+    trace: SimplifiedPcbTrace,
+    routeIndex: number,
+    query: CollisionQuery,
+    insideEndpoint: "start" | "end",
+    insideWidth: number,
+    outsideWidth: number,
+  ): void {
+    const boundary = this.obstacleIndex.getConnectedPadBoundaryPoint(
+      query,
+      insideEndpoint,
+    );
+    if (!boundary) return;
+    const inside = insideEndpoint === "start" ? query.start : query.end;
+    const outside = insideEndpoint === "start" ? query.end : query.start;
+    const length = Math.hypot(outside.x - inside.x, outside.y - inside.y);
+    if (length <= 1e-9) return;
+    const epsilon = Math.min(1e-6, length / 4);
+    const direction = {
+      x: (outside.x - inside.x) / length,
+      y: (outside.y - inside.y) / length,
+    };
+    const insideBoundary: WireRoutePoint = {
+      route_type: "wire",
+      x: boundary.x - direction.x * epsilon,
+      y: boundary.y - direction.y * epsilon,
+      width: insideWidth,
+      layer: query.layer,
+    };
+    const outsideBoundary: WireRoutePoint = {
+      ...insideBoundary,
+      x: boundary.x + direction.x * epsilon,
+      y: boundary.y + direction.y * epsilon,
+      width: outsideWidth,
+    };
+    const outsideRoutePoint =
+      insideEndpoint === "start"
+        ? trace.route[routeIndex + 1]
+        : trace.route[routeIndex];
+    const pointBeyondOutside =
+      insideEndpoint === "start"
+        ? trace.route[routeIndex + 2]
+        : trace.route[routeIndex - 1];
+    if (isWire(outsideRoutePoint) && pointBeyondOutside?.route_type === "via") {
+      const nominalWidth = this.resolveNominalTraceWidth(trace);
+      if (
+        !this.obstacleIndex.collides({
+          ...query,
+          start: outsideRoutePoint,
+          end: outsideBoundary,
+          width: nominalWidth,
+        })
+      ) {
+        outsideRoutePoint.width = Math.max(
+          outsideRoutePoint.width,
+          nominalWidth,
+        );
+        outsideBoundary.width = outsideRoutePoint.width;
+      }
+    }
+    trace.route.splice(
+      routeIndex + 1,
+      0,
+      ...(insideEndpoint === "start"
+        ? [insideBoundary, outsideBoundary]
+        : [outsideBoundary, insideBoundary]),
+    );
+  }
+
+  private resolveNominalTraceWidth(trace: SimplifiedPcbTrace): number {
+    const traceNames = new Set(
+      this.connectionNameResolver.canonicalize(
+        this.getTraceConnectionNames(trace),
+      ),
+    );
+    const connection = this.inputProblem.simpleRouteJson.connections.find(
+      (candidate) =>
+        this.connectionNameResolver
+          .canonicalize(
+            [
+              candidate.name,
+              candidate.source_trace_id,
+              candidate.rootConnectionName,
+              ...(candidate.mergedConnectionNames ?? []),
+            ].filter((name): name is string => Boolean(name)),
+          )
+          .some((name) => traceNames.has(name)),
+    );
+    return Math.max(
+      connection?.nominalTraceWidth ??
+        connection?.width ??
+        this.inputProblem.simpleRouteJson.nominalTraceWidth ??
+        this.minimumTraceWidth,
+      this.minimumTraceWidth,
+    );
   }
 
   private segmentHasForeignTraceCollision(routeIndex: number, width: number) {
@@ -208,6 +438,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       traceCount: this.traces.length,
       routeCursor: this.routeCursor,
       repairedSegmentCount: this.repairedSegmentCount,
+      repairedPadNeckSegmentCount: this.repairedPadNeckSegmentCount,
       unresolvedSegmentCount: this.unresolvedSegmentCount,
       totalWidthReduction: this.totalWidthReduction,
       spatialIndexRectCount: this.obstacleIndex.items.length,
