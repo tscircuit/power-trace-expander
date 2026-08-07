@@ -16,7 +16,7 @@ import {
 
 setDefaultTimeout(60_000);
 
-test("reproduces the sample003 trace left below half nominal width", async () => {
+test("expands the sample003 trace on its existing layer without new vias", async () => {
   const problem = createSample003UnexpandedTraceProblem();
   const solver = new PowerTraceExpanderSolver(problem, {
     allowNewVias: false,
@@ -37,10 +37,14 @@ test("reproduces the sample003 trace left below half nominal width", async () =>
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
   expect(solver.insertedViaCount).toBe(0);
-  expect(solver.reroutedSegmentCount).toBe(0);
-  expect(metrics.minimumWidth).toBe(0.225);
-  expect(metrics.averageWidth).toBeLessThan(0.4);
-  expect(metrics.longestBelowHalfNominalRun).toBeGreaterThan(18);
+  expect(solver.reroutedSegmentCount).toBeGreaterThan(0);
+  expect(targetTrace.route.every((point) => point.route_type === "wire")).toBe(
+    true,
+  );
+  expect(metrics.minimumWidth).toBe(SAMPLE003_NOMINAL_WIDTH);
+  expect(metrics.averageWidth).toBe(SAMPLE003_NOMINAL_WIDTH);
+  expect(metrics.nominalCoverage).toBe(1);
+  expect(metrics.longestBelowHalfNominalRun).toBe(0);
 
   // A full-width, top-only replacement is clear in the same obstacle field,
   // so this is an expansion miss rather than a genuinely blocked corridor.
@@ -69,7 +73,7 @@ test("reproduces the sample003 trace left below half nominal width", async () =>
     getPowerTraceGraphics({
       problem,
       traces: [targetTrace],
-      title: "sample003: expandable trace remains below half nominal",
+      title: "sample003: trace expands on top without new vias",
     }),
   ).toMatchGraphicsSvg(import.meta.path);
 });
