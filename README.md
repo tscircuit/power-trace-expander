@@ -110,6 +110,8 @@ The committed SVG suite covers:
 - same-net trace, via, pad, and imported-subcircuit alias handling, including
   same-net drill-spacing enforcement
 - an isolated upper `P_MOTOR_A` solve with the complete board context retained
+- the captured SRJ27 sample003 rail that remains below half nominal width even
+  though a collision-free, top-layer-only 1 mm replacement path is available
 - the captured RP2040 Dual Motor SRJ production problem
 
 On the production fixture, a representative local run completes in about 14
