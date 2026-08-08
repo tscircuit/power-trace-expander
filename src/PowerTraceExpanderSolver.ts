@@ -41,6 +41,8 @@ type RouteInterval = { startIndex: number; endIndex: number };
 
 type LayerRouteAttempt = {
   interval: RouteInterval;
+  minViaCount: number;
+  maxViaCount: number;
   candidateWidths: number[];
   widthCursor: number;
   gridResolutions: number[];
@@ -441,20 +443,24 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     trace: SimplifiedPcbTrace,
     segmentIndex: number,
   ) {
-    if (
-      this.options.allowNewVias === false ||
-      this.inputProblem.layerCount < 2 ||
-      this.nominalTraceWidth < 0.5 - WIDTH_EPSILON
-    ) {
+    if (this.nominalTraceWidth < 0.5 - WIDTH_EPSILON) {
       return false;
     }
+    // The layer-aware search also supports a zero-via mode. Unlike the
+    // regular planar search, it can leave a constrained interval endpoint
+    // through a short narrow neck and reach a nearby full-width corridor.
+    const canUseVias =
+      this.options.allowNewVias !== false && this.inputProblem.layerCount >= 2;
+    // Planar escapes may need several bounded, 10 mm reroutes to walk a long
+    // necked trace into the clear corridor, so allow one attempt per pass.
+    const maximumAttemptCount = canUseVias ? 2 : this.maxPassCount;
     const priorAttemptCount =
       this.layerAttemptCountByTrace.get(this.traceIndex) ?? 0;
     const priorRerouteCount =
       this.layerRerouteCountByTrace.get(this.traceIndex) ?? 0;
     if (
-      priorRerouteCount >= 2 ||
-      priorAttemptCount >= 2 ||
+      priorRerouteCount >= maximumAttemptCount ||
+      priorAttemptCount >= maximumAttemptCount ||
       priorAttemptCount > this.passIndex ||
       // Do not repeat an expensive failed search. A second attempt is only
       // useful after the first layer route changed this trace's geometry.
@@ -508,8 +514,12 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     const start = trace.route[interval.startIndex] as WireRoutePoint;
     const end = trace.route[interval.endIndex] as WireRoutePoint;
     const connectionNames = this.getTraceConnectionNames(trace);
-    const startLayers = this.getEndpointLayers(start, connectionNames);
-    const endLayers = this.getEndpointLayers(end, connectionNames);
+    const startLayers = canUseVias
+      ? this.getEndpointLayers(start, connectionNames)
+      : [start.layer];
+    const endLayers = canUseVias
+      ? this.getEndpointLayers(end, connectionNames)
+      : [end.layer];
     const startNeckWidth = Math.min(
       this.nominalTraceWidth,
       Math.max(
@@ -537,6 +547,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.layerAttemptCountByTrace.set(this.traceIndex, priorAttemptCount + 1);
     this.layerAttempt = {
       interval,
+      minViaCount: canUseVias ? 1 : 0,
+      maxViaCount: canUseVias ? 2 : 0,
       candidateWidths: [this.nominalTraceWidth],
       widthCursor: 0,
       gridResolutions: [clamp(this.nominalTraceWidth / 4, 0.2, 0.3)],
@@ -669,7 +681,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     );
     const maximumNeckLength = clamp(this.nominalTraceWidth * 3, 1.5, 3);
 
-    this.attemptedLayerGridCount++;
+    if (attempt.maxViaCount > 0) {
+      this.attemptedLayerGridCount++;
+    } else {
+      this.attemptedGridCount++;
+    }
     this.activeSubSolver = new LayerAwareGridRouteSolver({
       start,
       end,
@@ -686,8 +702,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       neckPenaltyExponent: variant.strictNecking ? 2 : 1,
       viaDiameter,
       viaHoleDiameter,
-      minViaCount: 1,
-      maxViaCount: 2,
+      minViaCount: attempt.minViaCount,
+      maxViaCount: attempt.maxViaCount,
       viaCost: Math.max(1, this.nominalTraceWidth * 2),
       gridSize,
       gridOffset: {
@@ -1150,7 +1166,6 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private layerRouteImprovesInterval(output: LayerGridRouteOutput) {
-    if (output.viaCount === 0) return false;
     const trace = this.traces[this.traceIndex]!;
     const interval = this.layerAttempt!.interval;
     const before = this.getRouteQuality(
@@ -1268,18 +1283,20 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       interval.endIndex - interval.startIndex + 1,
       ...replacement,
     );
-    this.layerReroutedTraceCount++;
+    if (output.viaCount > 0) this.layerReroutedTraceCount++;
     this.layerRerouteCountByTrace.set(
       this.traceIndex,
       (this.layerRerouteCountByTrace.get(this.traceIndex) ?? 0) + 1,
     );
     this.reroutedSegmentCount++;
     this.insertedViaCount += output.viaCount;
-    this.neckedLayerSegmentCount += replacement.filter(
-      (point) =>
-        point.route_type === "wire" &&
-        point.width < this.nominalTraceWidth - WIDTH_EPSILON,
-    ).length;
+    if (output.viaCount > 0) {
+      this.neckedLayerSegmentCount += replacement.filter(
+        (point) =>
+          point.route_type === "wire" &&
+          point.width < this.nominalTraceWidth - WIDTH_EPSILON,
+      ).length;
+    }
     this.routeSegmentIndex = interval.startIndex;
     this.currentIntervals = [];
     this.layerAttempt = null;
