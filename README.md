@@ -74,12 +74,21 @@ the largest improvement that fits instead of failing all-or-nothing. A separate
 final pass converts the clearance-improved route to 0/45/90-degree segments
 while preserving the clearance each local interval achieved.
 
+When `addViaArrays` is enabled, the final output also replaces an existing
+layer-transition via with a centered row wherever both adjacent traces are wide
+enough. The row spans the shared trace width and preserves the configured
+via-to-via spacing. It is committed only when every via remains inside the
+adjacent copper and passes all-layer obstacle, board-edge, connected-pad, and
+via-spacing checks. The solver tries small row rotations to avoid local
+obstacles; if none is safe, the original via is retained.
+
 For focused debugging, `onlyConnectionNames` restricts the top-level scan while
 retaining the complete board as fixed or pushable context:
 
 ```ts
 const solver = new PowerTraceExpanderSolver(problem, {
   onlyConnectionNames: ["source_trace_146"],
+  addViaArrays: true,
 })
 ```
 

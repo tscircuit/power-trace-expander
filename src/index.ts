@@ -16,6 +16,11 @@ export {
 export { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 export { ConnectionNameResolver } from "./ConnectionNameResolver";
 export {
+  addViaArraysToWideTraces,
+  type AddViaArraysToWideTracesOptions,
+  type AddViaArraysToWideTracesResult,
+} from "./addViaArraysToWideTraces";
+export {
   measureTraceWidths,
   TRACE_WIDTH_COVERAGE_FRACTIONS,
 } from "./measureTraceWidths";
