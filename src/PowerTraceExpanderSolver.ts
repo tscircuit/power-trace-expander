@@ -1,5 +1,6 @@
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
+import { addViaArraysToWideTraces } from "./addViaArraysToWideTraces";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
   clamp,
@@ -137,6 +138,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   repairedTraceClearanceSegmentCount = 0;
   repairedPadNeckSegmentCount = 0;
   unresolvedTraceClearanceSegmentCount = 0;
+  addedViaArrayCount = 0;
+  addedArrayViaCount = 0;
+  skippedViaArrayCount = 0;
   initialPadClearanceViolationCount = 0;
   remainingPadClearanceViolationCount = 0;
   initialPadClearanceViolationCountByClearance: Record<string, number> = {};
@@ -960,6 +964,17 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.unresolvedTraceClearanceSegmentCount = Number(
         stats.unresolvedSegmentCount ?? 0,
       );
+      if (this.options.addViaArrays) {
+        const viaArrayResult = addViaArraysToWideTraces({
+          simpleRouteJson: this.inputProblem,
+          traces: this.traces,
+          traceIndices: this.traceOrder,
+        });
+        this.traces = viaArrayResult.traces;
+        this.addedViaArrayCount = viaArrayResult.addedViaArrayCount;
+        this.addedArrayViaCount = viaArrayResult.addedViaCount;
+        this.skippedViaArrayCount = viaArrayResult.skippedViaArrayCount;
+      }
       this.activeSubSolver = null;
       this.phase = "complete";
       this.rebuildObstacleIndex();
@@ -2118,6 +2133,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       repairedPadNeckSegmentCount: this.repairedPadNeckSegmentCount,
       unresolvedTraceClearanceSegmentCount:
         this.unresolvedTraceClearanceSegmentCount,
+      addedViaArrayCount: this.addedViaArrayCount,
+      addedArrayViaCount: this.addedArrayViaCount,
+      skippedViaArrayCount: this.skippedViaArrayCount,
       initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
       remainingPadClearanceViolationCount:
         this.remainingPadClearanceViolationCount,

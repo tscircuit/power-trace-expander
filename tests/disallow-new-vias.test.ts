@@ -4,9 +4,9 @@ import { PowerTraceExpanderSolver } from "../src";
 
 test("does not introduce vias when new vias are disabled", () => {
   const input = structuredClone(simplifiedCases.layerChangeWithNecking);
-  const inputViaCount = input.traces!.flatMap((trace) => trace.route).filter(
-    (point) => point.route_type === "via",
-  ).length;
+  const inputViaCount = input
+    .traces!.flatMap((trace) => trace.route)
+    .filter((point) => point.route_type === "via").length;
   const solver = new PowerTraceExpanderSolver(input, { allowNewVias: false });
 
   solver.solve();

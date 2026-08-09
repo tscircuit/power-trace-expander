@@ -114,9 +114,16 @@ export type PowerTraceExpanderOptions = {
   onlyConnectionNames?: readonly string[];
   /**
    * Allow multilayer reroutes that introduce new vias. Defaults to true.
-   * Disable this when expansion must preserve or reduce the input via count.
+   * This is independent of `addViaArrays`; disable both options when expansion
+   * must preserve or reduce the input via count.
    */
   allowNewVias?: boolean;
+  /**
+   * Replace an existing layer-transition via with a clearance-safe row when
+   * the adjacent traces are wider than one via. This can add physical vias
+   * even when `allowNewVias` is false. Defaults to false.
+   */
+  addViaArrays?: boolean;
   /**
    * Preferred edge clearance from power copper to unrelated pads. Defaults
    * to half of each power trace's nominal width.

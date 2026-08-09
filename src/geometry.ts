@@ -1,9 +1,4 @@
-import type {
-  IndexedObstacle,
-  Obstacle,
-  Point,
-  WireRoutePoint,
-} from "./types";
+import type { IndexedObstacle, Obstacle, Point, WireRoutePoint } from "./types";
 
 export const WIDTH_EPSILON = 1e-6;
 
