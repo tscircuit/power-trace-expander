@@ -28,6 +28,10 @@ test("keeps a trace that already meets its nominal width byte-for-byte", () => {
   solver.solve();
 
   expect(solver.solved).toBe(true);
+  expect(solver.budgetLimitedExpansion).toBe(false);
+  expect(solver.finalAcceptanceUsed).toBe(false);
+  expect(solver.stats.completionReason).toBe("completed");
+  expect(solver.stats.resultStatus).toBe("complete");
   expect(solver.keptTraceCount).toBe(1);
   expect(solver.recreatedTraceCount).toBe(0);
   expect(solver.getOutput()).toEqual(originalTraces);

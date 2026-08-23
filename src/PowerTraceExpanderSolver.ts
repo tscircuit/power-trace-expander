@@ -72,6 +72,11 @@ const LAYER_GRID_VARIANTS: Array<{
   { offset: { x: 0.5, y: 0.5 }, strictNecking: false },
 ];
 
+const TOTAL_ITERATION_BUDGET = 8_000_000;
+const FINALIZATION_ITERATION_RESERVE_FRACTION = 1 / 8;
+const CLEANUP_SHARE_OF_FINALIZATION_BUDGET = 3 / 4;
+const MAX_RETAINED_FAILED_SUBSOLVERS = 16;
+
 const uniqueDescending = (values: number[]) =>
   [...new Set(values.map((value) => Number(value.toFixed(6))))].sort(
     (a, b) => b - a,
@@ -141,6 +146,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   remainingPadClearanceViolationCount = 0;
   initialPadClearanceViolationCountByClearance: Record<string, number> = {};
   remainingPadClearanceViolationCountByClearance: Record<string, number> = {};
+  budgetLimitedExpansion = false;
+  finalAcceptanceUsed = false;
+  cleanupCompleted = false;
+  clearanceRepairCompleted = false;
+  cleanupBestEffortAccepted = false;
+  clearanceRepairBestEffortAccepted = false;
+  cleanupIterationBudget = 0;
+  clearanceRepairIterationBudget = 0;
+  failedSubSolverCount = 0;
 
   private readonly inflationAttemptsBySegment = new Map<string, number>();
   private readonly layerAttemptCountByTrace = new Map<number, number>();
@@ -212,7 +226,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.connectionNameResolver,
     );
     this.activeSubSolver = null;
-    this.MAX_ITERATIONS = 8_000_000;
+    this.MAX_ITERATIONS = TOTAL_ITERATION_BUDGET;
     this.stats = this.createStats();
   }
 
@@ -221,6 +235,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   override _step() {
+    if (this.shouldStartBudgetFinalization()) {
+      this.startBudgetFinalization();
+      this.stats = this.createStats();
+      return;
+    }
     if (this.activeSubSolver) {
       this.stepActiveGridSolver();
       this.stats = this.createStats();
@@ -319,15 +338,85 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return;
     }
 
+    this.startCleanup();
+  }
+
+  private startCleanup() {
     this.traceIndex = this.traces.length;
     this.phase = "cleanup";
-    this.activeSubSolver = new PowerTraceCleanupSolver({
+    const cleanupSolver = new PowerTraceCleanupSolver({
       simpleRouteJson: this.inputProblem,
       traces: this.traces,
       traceIndices: this.traceOrder,
       maxRerouteLength: 10,
       desiredPadClearance: this.options.powerTraceToPadClearance,
     });
+    const availableFinalizationIterations =
+      this.getRemainingParentIterationsAfterCurrentStep();
+    const cleanupIterationBudget =
+      availableFinalizationIterations === 0
+        ? 0
+        : Math.max(
+            1,
+            Math.floor(
+              availableFinalizationIterations *
+                CLEANUP_SHARE_OF_FINALIZATION_BUDGET,
+            ),
+          );
+    cleanupSolver.MAX_ITERATIONS = Math.min(
+      cleanupSolver.MAX_ITERATIONS,
+      cleanupIterationBudget,
+    );
+    this.cleanupIterationBudget = cleanupSolver.MAX_ITERATIONS;
+    this.activeSubSolver = cleanupSolver;
+  }
+
+  private shouldStartBudgetFinalization() {
+    if (this.budgetLimitedExpansion) return false;
+    if (
+      this.phase === "cleanup" ||
+      this.phase === "repair-trace-clearance" ||
+      this.phase === "complete"
+    ) {
+      return false;
+    }
+    return this.iterations >= this.getExpansionIterationBudget();
+  }
+
+  private getFinalizationIterationReserve() {
+    return Math.min(
+      Math.max(0, this.MAX_ITERATIONS - 1),
+      Math.max(
+        1,
+        Math.floor(
+          this.MAX_ITERATIONS * FINALIZATION_ITERATION_RESERVE_FRACTION,
+        ),
+      ),
+    );
+  }
+
+  private getExpansionIterationBudget() {
+    return Math.max(
+      1,
+      this.MAX_ITERATIONS - this.getFinalizationIterationReserve(),
+    );
+  }
+
+  private startBudgetFinalization() {
+    this.budgetLimitedExpansion = true;
+    this.activeSubSolver = null;
+    this.pendingLayerOutput = null;
+    this.pendingLayerPushCount = 0;
+    this.activeInflationKey = null;
+    this.activeInflationWidth = null;
+    this.layerAttempt = null;
+    this.startCleanup();
+  }
+
+  private getRemainingParentIterationsAfterCurrentStep() {
+    // The current parent step has already been counted by BaseSolver. Keep one
+    // final parent step available to transition from `complete` to `solved`.
+    return Math.max(0, this.MAX_ITERATIONS - this.iterations - 1);
   }
 
   private calculateWidthDeficit() {
@@ -879,8 +968,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       }
     }
 
-    this.failedSubSolvers ??= [];
-    this.failedSubSolvers.push(solver);
+    this.retainFailedSubSolver(solver);
     this.activeSubSolver = null;
     this.offsetCursor++;
   }
@@ -891,56 +979,67 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     if (!solver.solved && !solver.failed) return;
 
     if (solver.solved) {
-      this.traces = solver.getOutput();
-      const stats = solver.stats as Record<string, unknown>;
-      this.removedViaPairCount = Number(stats.viaPairCountRemoved ?? 0);
-      this.removedViaCount = Number(stats.viaCountRemoved ?? 0);
-      this.simplifiedPathCount = Number(stats.simplifiedPathCount ?? 0);
-      this.normalizedSegmentCount = Number(stats.normalizedSegmentCount ?? 0);
-      this.cleanupClearanceShoveCount = Number(
-        stats.committedClearanceShoveCount ?? 0,
-      );
-      this.relocatedViaCount = Number(stats.relocatedViaCount ?? 0);
-      this.unresolvedViaCount = Number(stats.unresolvedViaCount ?? 0);
-      this.padClearanceRerouteCount = Number(
-        stats.padClearanceRerouteCount ?? 0,
-      );
-      this.unresolvedPadClearanceCount = Number(
-        stats.unresolvedPadClearanceCount ?? 0,
-      );
-      this.initialPadClearanceViolationCount = Number(
-        stats.initialPadClearanceViolationCount ?? 0,
-      );
-      this.remainingPadClearanceViolationCount = Number(
-        stats.remainingPadClearanceViolationCount ?? 0,
-      );
-      this.initialPadClearanceViolationCountByClearance = {
-        ...((stats.initialPadClearanceViolationCountByClearance ??
-          {}) as Record<string, number>),
-      };
-      this.remainingPadClearanceViolationCountByClearance = {
-        ...((stats.remainingPadClearanceViolationCountByClearance ??
-          {}) as Record<string, number>),
-      };
+      this.adoptCleanupOutput(solver);
       this.activeSubSolver = null;
       this.startTraceClearanceRepair();
-      this.rebuildObstacleIndex();
       return;
     }
 
-    this.failedSubSolvers ??= [];
-    this.failedSubSolvers.push(solver);
+    this.retainFailedSubSolver(solver);
     this.activeSubSolver = null;
     this.startTraceClearanceRepair();
   }
 
+  private adoptCleanupOutput(solver: PowerTraceCleanupSolver) {
+    this.traces = solver.getOutput();
+    this.cleanupCompleted = !solver.budgetLimited;
+    this.cleanupBestEffortAccepted = solver.budgetLimited;
+    const stats = solver.stats as Record<string, unknown>;
+    this.removedViaPairCount = Number(stats.viaPairCountRemoved ?? 0);
+    this.removedViaCount = Number(stats.viaCountRemoved ?? 0);
+    this.simplifiedPathCount = Number(stats.simplifiedPathCount ?? 0);
+    this.normalizedSegmentCount = Number(stats.normalizedSegmentCount ?? 0);
+    this.cleanupClearanceShoveCount = Number(
+      stats.committedClearanceShoveCount ?? 0,
+    );
+    this.relocatedViaCount = Number(stats.relocatedViaCount ?? 0);
+    this.unresolvedViaCount = Number(stats.unresolvedViaCount ?? 0);
+    this.padClearanceRerouteCount = Number(stats.padClearanceRerouteCount ?? 0);
+    this.unresolvedPadClearanceCount = Number(
+      stats.unresolvedPadClearanceCount ?? 0,
+    );
+    this.initialPadClearanceViolationCount = Number(
+      stats.initialPadClearanceViolationCount ?? 0,
+    );
+    this.remainingPadClearanceViolationCount = Number(
+      stats.remainingPadClearanceViolationCount ?? 0,
+    );
+    this.initialPadClearanceViolationCountByClearance = {
+      ...((stats.initialPadClearanceViolationCountByClearance ?? {}) as Record<
+        string,
+        number
+      >),
+    };
+    this.remainingPadClearanceViolationCountByClearance = {
+      ...((stats.remainingPadClearanceViolationCountByClearance ??
+        {}) as Record<string, number>),
+    };
+    this.rebuildObstacleIndex();
+  }
+
   private startTraceClearanceRepair() {
     this.phase = "repair-trace-clearance";
-    this.activeSubSolver = new PowerTraceClearanceRepairSolver({
+    const clearanceRepairSolver = new PowerTraceClearanceRepairSolver({
       simpleRouteJson: this.inputProblem,
       traces: this.traces,
       traceIndices: this.traceOrder,
     });
+    clearanceRepairSolver.MAX_ITERATIONS = Math.min(
+      clearanceRepairSolver.MAX_ITERATIONS,
+      this.getRemainingParentIterationsAfterCurrentStep(),
+    );
+    this.clearanceRepairIterationBudget = clearanceRepairSolver.MAX_ITERATIONS;
+    this.activeSubSolver = clearanceRepairSolver;
   }
 
   private stepActiveTraceClearanceRepairSolver() {
@@ -949,27 +1048,32 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     if (!solver.solved && !solver.failed) return;
 
     if (solver.solved) {
-      this.traces = solver.getOutput();
-      const stats = solver.stats as Record<string, unknown>;
-      this.repairedTraceClearanceSegmentCount = Number(
-        stats.repairedSegmentCount ?? 0,
-      );
-      this.repairedPadNeckSegmentCount = Number(
-        stats.repairedPadNeckSegmentCount ?? 0,
-      );
-      this.unresolvedTraceClearanceSegmentCount = Number(
-        stats.unresolvedSegmentCount ?? 0,
-      );
+      this.adoptClearanceRepairOutput(solver);
       this.activeSubSolver = null;
       this.phase = "complete";
-      this.rebuildObstacleIndex();
       return;
     }
 
-    this.failedSubSolvers ??= [];
-    this.failedSubSolvers.push(solver);
+    this.retainFailedSubSolver(solver);
     this.activeSubSolver = null;
     this.phase = "complete";
+  }
+
+  private adoptClearanceRepairOutput(solver: PowerTraceClearanceRepairSolver) {
+    this.traces = solver.getOutput();
+    this.clearanceRepairCompleted = !solver.budgetLimited;
+    this.clearanceRepairBestEffortAccepted = solver.budgetLimited;
+    const stats = solver.stats as Record<string, unknown>;
+    this.repairedTraceClearanceSegmentCount = Number(
+      stats.repairedSegmentCount ?? 0,
+    );
+    this.repairedPadNeckSegmentCount = Number(
+      stats.repairedPadNeckSegmentCount ?? 0,
+    );
+    this.unresolvedTraceClearanceSegmentCount = Number(
+      stats.unresolvedSegmentCount ?? 0,
+    );
+    this.rebuildObstacleIndex();
   }
 
   private stepActiveLayerSolver() {
@@ -996,8 +1100,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       }
     }
 
-    this.failedSubSolvers ??= [];
-    this.failedSubSolvers.push(solver);
+    this.retainFailedSubSolver(solver);
     this.activeSubSolver = null;
     if (this.layerAttempt) this.layerAttempt.offsetCursor++;
     this.phase = "try-layer-candidate";
@@ -1469,8 +1572,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       }
     }
 
-    this.failedSubSolvers ??= [];
-    this.failedSubSolvers.push(solver);
+    this.retainFailedSubSolver(solver);
     if (this.activeInflationKey) {
       this.inflationAttemptsBySegment.set(this.activeInflationKey, 2);
     }
@@ -2067,6 +2169,44 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     );
   }
 
+  private retainFailedSubSolver(solver: BaseSolver) {
+    this.failedSubSolverCount++;
+    this.failedSubSolvers ??= [];
+    if (this.failedSubSolvers.length < MAX_RETAINED_FAILED_SUBSOLVERS) {
+      this.failedSubSolvers.push(solver);
+      return;
+    }
+    // Keep the earliest failures that explain how the search entered a bad
+    // region, plus the latest failure for current-state debugging. Retaining
+    // every rejected grid keeps large search structures alive indefinitely.
+    this.failedSubSolvers[MAX_RETAINED_FAILED_SUBSOLVERS - 1] = solver;
+  }
+
+  override tryFinalAcceptance() {
+    this.finalAcceptanceUsed = true;
+    if (this.activeSubSolver instanceof PowerTraceCleanupSolver) {
+      this.activeSubSolver.tryFinalAcceptance();
+      this.adoptCleanupOutput(this.activeSubSolver);
+    } else if (
+      this.activeSubSolver instanceof PowerTraceClearanceRepairSolver
+    ) {
+      this.activeSubSolver.tryFinalAcceptance();
+      this.adoptClearanceRepairOutput(this.activeSubSolver);
+    }
+    this.activeSubSolver = null;
+    this.pendingLayerOutput = null;
+    this.pendingLayerPushCount = 0;
+    this.activeInflationKey = null;
+    this.activeInflationWidth = null;
+    this.layerAttempt = null;
+    this.traceIndex = this.traces.length;
+    this.phase = "complete";
+    this.rebuildObstacleIndex();
+    this.progress = 1;
+    this.solved = true;
+    this.stats = this.createStats();
+  }
+
   private createStats() {
     return {
       phase: this.phase,
@@ -2127,11 +2267,58 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       remainingPadClearanceViolationCountByClearance: {
         ...this.remainingPadClearanceViolationCountByClearance,
       },
+      budgetLimitedExpansion: this.budgetLimitedExpansion,
+      finalAcceptanceUsed: this.finalAcceptanceUsed,
+      cleanupCompleted: this.cleanupCompleted,
+      clearanceRepairCompleted: this.clearanceRepairCompleted,
+      cleanupBestEffortAccepted: this.cleanupBestEffortAccepted,
+      clearanceRepairBestEffortAccepted: this.clearanceRepairBestEffortAccepted,
+      cleanupStatus: this.cleanupBestEffortAccepted
+        ? "budget_limited"
+        : this.cleanupCompleted
+          ? "completed"
+          : this.phase === "cleanup"
+            ? "in_progress"
+            : "not_started",
+      clearanceRepairStatus: this.clearanceRepairBestEffortAccepted
+        ? "budget_limited"
+        : this.clearanceRepairCompleted
+          ? "completed"
+          : this.phase === "repair-trace-clearance"
+            ? "in_progress"
+            : "not_started",
+      cleanupIterationBudget: this.cleanupIterationBudget,
+      clearanceRepairIterationBudget: this.clearanceRepairIterationBudget,
+      completionReason:
+        this.phase !== "complete" && !this.solved
+          ? null
+          : this.finalAcceptanceUsed
+            ? "total_iteration_budget"
+            : this.budgetLimitedExpansion
+              ? "expansion_budget"
+              : this.cleanupBestEffortAccepted
+                ? "cleanup_budget"
+                : this.clearanceRepairBestEffortAccepted
+                  ? "clearance_repair_budget"
+                  : "completed",
+      resultStatus:
+        this.finalAcceptanceUsed ||
+        this.budgetLimitedExpansion ||
+        this.cleanupBestEffortAccepted ||
+        this.clearanceRepairBestEffortAccepted
+          ? "best_effort"
+          : "complete",
+      failedSubSolverCount: this.failedSubSolverCount,
+      retainedFailedSubSolverCount: this.failedSubSolvers?.length ?? 0,
+      expansionIterationBudget: this.getExpansionIterationBudget(),
+      finalizationIterationReserve: this.getFinalizationIterationReserve(),
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }
 
   computeProgress() {
+    if (this.solved || this.phase === "complete") return 1;
+    if (this.budgetLimitedExpansion) return 0.99;
     if (this.traceOrder.length === 0) return 1;
     return Math.min(
       0.99,

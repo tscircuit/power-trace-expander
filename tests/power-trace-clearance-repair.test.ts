@@ -160,3 +160,28 @@ test("necks an endpoint-width transition that would collide after route reversal
     svgName: "direction-independent-trace-clearance",
   });
 });
+
+test("keeps committed clearance repairs when its iteration budget is reached", () => {
+  const input = structuredClone(problem);
+  const solver = new PowerTraceClearanceRepairSolver({
+    simpleRouteJson: input,
+    traces: input.traces,
+  });
+  const originalWidth =
+    input.traces[0]!.route[1]!.route_type === "wire"
+      ? input.traces[0]!.route[1]!.width
+      : 0;
+  solver.MAX_ITERATIONS = 1;
+
+  solver.solve();
+
+  const repairedPoint = solver.getOutput()[0]!.route[1]!;
+  expect(solver.solved).toBe(true);
+  expect(solver.failed).toBe(false);
+  expect(solver.budgetLimited).toBe(true);
+  expect(solver.stats.completionReason).toBe("iteration_budget");
+  expect(repairedPoint.route_type).toBe("wire");
+  expect(
+    repairedPoint.route_type === "wire" ? repairedPoint.width : originalWidth,
+  ).toBeLessThan(originalWidth);
+});

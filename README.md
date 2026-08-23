@@ -67,6 +67,18 @@ less than 0.1% of the total nominal copper area, with a four-pass hard cap.
 This lets displaced traces unlock later improvements without turning a
 post-route repair into an unbounded global reroute.
 
+The total iteration budget is also split between optional width expansion and
+mandatory finalization. When expansion consumes seven eighths of the budget,
+the solver discards any uncommitted candidate, runs its normal cleanup and
+clearance-repair passes, and returns the best committed approximation instead
+of failing only because further widening was not possible. The result stats
+report `budgetLimitedExpansion`, `resultStatus`, explicit cleanup/repair
+statuses, and any unresolved clearance work. Each finalization pass also
+returns its own committed prefix if its reserved share is exhausted, so
+downstream DRC can distinguish a complete optimization from a budget-limited
+best effort. Rejected child solvers are retained in a bounded debug history
+rather than keeping every search grid alive for the lifetime of the solve.
+
 After width expansion, a dedicated pad-clearance pass moves power copper away
 from unrelated pads toward half of that trace's nominal width. It tries the
 full target first, then descending 0.025–0.05 mm tiers so a dense escape keeps
