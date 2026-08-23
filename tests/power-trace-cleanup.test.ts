@@ -30,6 +30,25 @@ test("removes a redundant same-layer via pair", async () => {
   });
 });
 
+test("keeps committed cleanup work when its iteration budget is reached", () => {
+  const problem = structuredClone(cleanupCases.viaPairElimination);
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+  });
+  solver.MAX_ITERATIONS = 8;
+
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.failed).toBe(false);
+  expect(solver.budgetLimited).toBe(true);
+  expect(solver.stats.completionReason).toBe("iteration_budget");
+  expect(
+    solver.getOutput()[0]!.route.filter((point) => point.route_type === "via"),
+  ).toHaveLength(0);
+});
+
 test("uses an octilinear obstacle-aware detour to remove a via pair", async () => {
   const problem = structuredClone(cleanupCases.viaPairObstacleDetour);
   const solver = new PowerTraceCleanupSolver({

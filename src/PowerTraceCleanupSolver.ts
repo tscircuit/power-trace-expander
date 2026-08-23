@@ -165,6 +165,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   remainingPadClearanceViolationCount = 0;
   initialPadClearanceViolationCountByClearance: Record<string, number> = {};
   remainingPadClearanceViolationCountByClearance: Record<string, number> = {};
+  budgetLimited = false;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly traceIndices: number[];
@@ -2145,6 +2146,13 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     const candidate = this.candidates[this.candidateCursor];
     return {
       phase: this.phase,
+      budgetLimited: this.budgetLimited,
+      completionReason:
+        this.phase !== "complete" && !this.solved
+          ? null
+          : this.budgetLimited
+            ? "iteration_budget"
+            : "completed",
       traceCursor: this.traceCursor,
       traceCount: this.traceIndices.length,
       traceIndex: this.traceIndices[this.traceCursor],
@@ -2185,6 +2193,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   }
 
   computeProgress() {
+    if (this.solved || this.phase === "complete") return 1;
     if (this.traceIndices.length === 0) return 1;
     const phaseOffset = this.resumePhase === "scan-via-pairs" ? 0 : 0.5;
     return Math.min(
@@ -2195,6 +2204,43 @@ export class PowerTraceCleanupSolver extends BaseSolver {
 
   override getConstructorParams() {
     return [this.inputProblem];
+  }
+
+  override tryFinalAcceptance() {
+    // Child solvers and clearance shoves are transactional. Roll back only the
+    // in-flight transaction while preserving every cleanup change that was
+    // already committed to the parent trace array.
+    const rollbackTraces =
+      this.pushedViaRepairRollbackTraces ?? this.rollbackTraces;
+    if (rollbackTraces) this.traces = rollbackTraces;
+    this.activeSubSolver = null;
+    this.rollbackTraces = null;
+    this.pushedViaRepairRollbackTraces = null;
+    this.pendingPushedViaRepair = null;
+    this.alternatePushedViaRepairs = [];
+    this.viaGridAttempt = null;
+    this.candidates = [];
+    this.candidateCursor = 0;
+    this.clearanceTierCursor = 0;
+    this.candidateShoveCount = 0;
+    this.baseCandidateValidated = false;
+    this.candidateSetMayUseGridFallback = false;
+    this.obstacleIndex = new SpatialObstacleIndex(
+      this.inputProblem.simpleRouteJson,
+      this.traces,
+      undefined,
+      [],
+      this.connectionNameResolver,
+    );
+    this.remainingPadClearanceViolationCount =
+      this.countPadClearanceViolations();
+    this.remainingPadClearanceViolationCountByClearance =
+      this.countPadClearanceViolationsByTier();
+    this.budgetLimited = true;
+    this.phase = "complete";
+    this.solved = true;
+    this.progress = 1;
+    this.stats = this.createStats();
   }
 
   override getOutput(): PowerTraceCleanupOutput {

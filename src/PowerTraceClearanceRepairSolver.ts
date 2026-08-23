@@ -39,6 +39,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   repairedPadNeckSegmentCount = 0;
   unresolvedSegmentCount = 0;
   totalWidthReduction = 0;
+  budgetLimited = false;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly minimumTraceWidth: number;
@@ -448,6 +449,12 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   private createStats() {
     return {
       phase: this.solved ? "complete" : "repair-trace-clearance",
+      budgetLimited: this.budgetLimited,
+      completionReason: this.solved
+        ? this.budgetLimited
+          ? "iteration_budget"
+          : "completed"
+        : null,
       traceCursor: this.traceCursor,
       traceCount: this.traceIndices.length,
       traceIndex: this.traceIndices[this.traceCursor],
@@ -461,8 +468,18 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   }
 
   computeProgress() {
+    if (this.solved) return 1;
     if (this.traceIndices.length === 0) return 1;
     return Math.min(0.99, this.traceCursor / this.traceIndices.length);
+  }
+
+  override tryFinalAcceptance() {
+    // Every repair step is atomic, so `traces` always contains a safe committed
+    // prefix of the full clearance-repair pass.
+    this.budgetLimited = true;
+    this.solved = true;
+    this.progress = 1;
+    this.stats = this.createStats();
   }
 
   override getConstructorParams() {
