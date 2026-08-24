@@ -18,7 +18,7 @@ const getConnectionConnectivity = (
   return connection;
 };
 
-test("reproduces MangoPi R3C GND endpoint disconnection during power expansion", async () => {
+test("preserves MangoPi R3C physical endpoint connectivity during power expansion", async () => {
   const fixtureBytes = await Bun.file(fixturePath).arrayBuffer();
   expect(
     new Bun.CryptoHasher("sha256").update(fixtureBytes).digest("hex"),
@@ -76,19 +76,16 @@ test("reproduces MangoPi R3C GND endpoint disconnection during power expansion",
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
   expect(solver.error).toBeNull();
-  expect(solver.iterations).toBe(7_374_246);
+  expect(solver.iterations).toBeLessThanOrEqual(8_000_000);
   expect(solver.getOutput()).toHaveLength(405);
   expect(solver.stats).toMatchObject({
     budgetLimitedExpansion: true,
     cleanupCompleted: true,
     clearanceRepairCompleted: true,
-    unresolvedViaCount: 209,
-    unresolvedTraceClearanceSegmentCount: 25,
     completionReason: "expansion_budget",
     resultStatus: "best_effort",
-    failedSubSolverCount: 43_771,
-    retainedFailedSubSolverCount: 16,
   });
+  expect(solver.sameNetContactRejectionCount).toBeGreaterThan(0);
 
   const outputProblem = {
     ...structuredClone(inputProblem),
@@ -102,14 +99,19 @@ test("reproduces MangoPi R3C GND endpoint disconnection during power expansion",
     outputConnectivity,
     "source_net_0",
   );
-  expect(outputConnectivity).toMatchObject({
-    checkedConnectionCount: 113,
-    connectedConnectionCount: 107,
-    checkedEndpointCount: 518,
-    connectedEndpointCount: 408,
-  });
-  expect(outputGroundConnectivity).toMatchObject({
-    checkedEndpointCount: 99,
-    connectedEndpointCount: 1,
-  });
+  expect(outputConnectivity.checkedConnectionCount).toBe(113);
+  expect(outputConnectivity.checkedEndpointCount).toBe(518);
+  for (const inputConnection of inputConnectivity.connections) {
+    const outputConnection = getConnectionConnectivity(
+      outputConnectivity,
+      inputConnection.connectionName,
+    );
+    expect(outputConnection.connectedEndpointCount).toBeGreaterThanOrEqual(
+      inputConnection.connectedEndpointCount,
+    );
+  }
+  expect(outputGroundConnectivity.checkedEndpointCount).toBe(99);
+  expect(
+    outputGroundConnectivity.connectedEndpointCount,
+  ).toBeGreaterThanOrEqual(inputGroundConnectivity.connectedEndpointCount);
 }, 9_999_999);

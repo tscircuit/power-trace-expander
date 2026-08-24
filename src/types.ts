@@ -148,6 +148,8 @@ export type IndexedObstacle = {
   kind: "obstacle" | "trace" | "via";
   obstacleKind?: "pad" | "via" | "other";
   connectionNames: string[];
+  /** Stable identity for all indexed chunks from one copper object. */
+  copperObjectId?: string;
   traceIndex?: number;
   routeStartIndex?: number;
   routeEndIndex?: number;
