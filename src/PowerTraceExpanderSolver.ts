@@ -142,6 +142,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   repairedTraceClearanceSegmentCount = 0;
   repairedPadNeckSegmentCount = 0;
   unresolvedTraceClearanceSegmentCount = 0;
+  sameNetContactRejectionCount = 0;
   initialPadClearanceViolationCount = 0;
   remainingPadClearanceViolationCount = 0;
   initialPadClearanceViolationCountByClearance: Record<string, number> = {};
@@ -957,14 +958,16 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
     if (solver.solved) {
       const output = solver.getOutput();
-      if (
-        output &&
-        !this.gridRouteReplacementCollides(output) &&
-        !this.gridRouteBoundaryCollides(output)
-      ) {
-        this.applyGridRoute(this.maximizeGridRouteWidth(output));
-        this.activeSubSolver = null;
-        return;
+      if (output) {
+        const collides =
+          this.gridRouteReplacementCollides(output) ||
+          this.gridRouteBoundaryCollides(output);
+        if (!collides && this.gridRoutePreservesSameNetContacts(output)) {
+          this.applyGridRoute(this.maximizeGridRouteWidth(output));
+          this.activeSubSolver = null;
+          return;
+        }
+        if (!collides) this.sameNetContactRejectionCount++;
       }
     }
 
@@ -1083,20 +1086,25 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
     if (solver.solved) {
       const output = solver.getOutput();
-      if (
-        output &&
-        !this.layerRouteReplacementCollides(output, true) &&
-        this.layerRouteImprovesInterval(output)
-      ) {
-        this.activeSubSolver = null;
-        this.pendingLayerOutput = output;
-        this.pendingLayerPushCount = 0;
-        if (!this.layerRouteReplacementCollides(output, false)) {
-          this.applyLayerRoute(output);
-          return;
+      if (output) {
+        const collides = this.layerRouteReplacementCollides(output, true);
+        const improves = !collides && this.layerRouteImprovesInterval(output);
+        const preservesContacts =
+          improves && this.layerRoutePreservesSameNetContacts(output);
+        if (preservesContacts) {
+          this.activeSubSolver = null;
+          this.pendingLayerOutput = output;
+          this.pendingLayerPushCount = 0;
+          if (!this.layerRouteReplacementCollides(output, false)) {
+            this.applyLayerRoute(output);
+            return;
+          }
+          if (this.startPendingLayerInflation()) return;
+          this.pendingLayerOutput = null;
         }
-        if (this.startPendingLayerInflation()) return;
-        this.pendingLayerOutput = null;
+        if (improves && !preservesContacts) {
+          this.sameNetContactRejectionCount++;
+        }
       }
     }
 
@@ -1355,31 +1363,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private applyLayerRoute(output: LayerGridRouteOutput) {
     const trace = this.traces[this.traceIndex]!;
     const interval = this.layerAttempt!.interval;
-    const originalStart = trace.route[interval.startIndex] as WireRoutePoint;
-    const originalEnd = trace.route[interval.endIndex] as WireRoutePoint;
-    const replacement = structuredClone(output.route);
-    const firstWireIndex = replacement.findIndex(
-      (point) => point.route_type === "wire",
-    );
-    let lastWireIndex = -1;
-    for (let index = replacement.length - 1; index >= 0; index--) {
-      if (replacement[index]?.route_type === "wire") {
-        lastWireIndex = index;
-        break;
-      }
-    }
-    if (firstWireIndex >= 0) {
-      replacement[firstWireIndex] = {
-        ...originalStart,
-        ...replacement[firstWireIndex],
-      } as WireRoutePoint;
-    }
-    if (lastWireIndex >= 0) {
-      replacement[lastWireIndex] = {
-        ...originalEnd,
-        ...replacement[lastWireIndex],
-      } as WireRoutePoint;
-    }
+    const replacement = this.createLayerRouteReplacement(output);
 
     trace.route.splice(
       interval.startIndex,
@@ -1406,6 +1390,47 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.pendingLayerOutput = null;
     this.pendingLayerPushCount = 0;
     this.phase = "evaluate-segment";
+  }
+
+  private createLayerRouteReplacement(output: LayerGridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.layerAttempt!.interval;
+    const originalStart = trace.route[interval.startIndex] as WireRoutePoint;
+    const originalEnd = trace.route[interval.endIndex] as WireRoutePoint;
+    const replacement = structuredClone(output.route);
+    const firstWireIndex = replacement.findIndex(
+      (point) => point.route_type === "wire",
+    );
+    let lastWireIndex = -1;
+    for (let index = replacement.length - 1; index >= 0; index--) {
+      if (replacement[index]?.route_type === "wire") {
+        lastWireIndex = index;
+        break;
+      }
+    }
+    if (firstWireIndex >= 0) {
+      replacement[firstWireIndex] = {
+        ...originalStart,
+        ...replacement[firstWireIndex],
+      } as WireRoutePoint;
+    }
+    if (lastWireIndex >= 0) {
+      replacement[lastWireIndex] = {
+        ...originalEnd,
+        ...replacement[lastWireIndex],
+      } as WireRoutePoint;
+    }
+    return replacement;
+  }
+
+  private layerRoutePreservesSameNetContacts(output: LayerGridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.layerAttempt!.interval;
+    return this.routeReplacementPreservesSameNetContacts(
+      trace,
+      interval,
+      this.createLayerRouteReplacement(output),
+    );
   }
 
   private startTraceInflation(trace: SimplifiedPcbTrace, segmentIndex: number) {
@@ -1545,7 +1570,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
     if (solver.solved) {
       const output = solver.getOutput();
-      if (output) {
+      const contactsArePreserved =
+        output &&
+        this.sameNetContactsArePreserved(
+          this.traces[output.pushedTraceIndex]!.route,
+          output.traces[output.pushedTraceIndex]!.route,
+          this.getTraceConnectionNames(this.traces[output.pushedTraceIndex]!),
+          output.pushedTraceIndex,
+        );
+      if (output && contactsArePreserved) {
         this.traces = output.traces;
         this.pushedTraceCount++;
         if (output.strategy === "elastic") this.elasticPushedTraceCount++;
@@ -1555,7 +1588,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         this.rebuildObstacleIndex();
         if (this.pendingLayerOutput) {
           if (
-            !this.layerRouteReplacementCollides(this.pendingLayerOutput, false)
+            !this.layerRouteReplacementCollides(
+              this.pendingLayerOutput,
+              false,
+            ) &&
+            this.layerRoutePreservesSameNetContacts(this.pendingLayerOutput)
           ) {
             this.applyLayerRoute(this.pendingLayerOutput);
             return;
@@ -1569,6 +1606,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         }
         this.phase = "evaluate-segment";
         return;
+      }
+      if (output && !contactsArePreserved) {
+        this.sameNetContactRejectionCount++;
       }
     }
 
@@ -1677,6 +1717,21 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private applyGridRoute(output: GridRouteOutput) {
     const trace = this.traces[this.traceIndex]!;
     const interval = this.currentIntervals[this.intervalCursor]!;
+    const replacement = this.createGridRouteReplacement(output);
+    trace.route.splice(
+      interval.startIndex,
+      interval.endIndex - interval.startIndex + 1,
+      ...replacement,
+    );
+    this.reroutedSegmentCount++;
+    this.routeSegmentIndex = interval.startIndex + replacement.length - 1;
+    this.currentIntervals = [];
+    this.phase = "evaluate-segment";
+  }
+
+  private createGridRouteReplacement(output: GridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.currentIntervals[this.intervalCursor]!;
     const startPoint = trace.route[interval.startIndex] as WireRoutePoint;
     const endPoint = trace.route[interval.endIndex] as WireRoutePoint;
     const replacement: WireRoutePoint[] = output.points.map((point) => ({
@@ -1691,15 +1746,135 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       endPoint.width,
       output.traceWidth,
     );
-    trace.route.splice(
-      interval.startIndex,
-      interval.endIndex - interval.startIndex + 1,
-      ...replacement,
+    return replacement;
+  }
+
+  private gridRoutePreservesSameNetContacts(output: GridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.currentIntervals[this.intervalCursor]!;
+    return this.routeReplacementPreservesSameNetContacts(
+      trace,
+      interval,
+      this.createGridRouteReplacement(output),
     );
-    this.reroutedSegmentCount++;
-    this.routeSegmentIndex = interval.startIndex + replacement.length - 1;
-    this.currentIntervals = [];
-    this.phase = "evaluate-segment";
+  }
+
+  private routeReplacementPreservesSameNetContacts(
+    trace: SimplifiedPcbTrace,
+    interval: RouteInterval,
+    replacement: SimplifiedPcbTrace["route"],
+  ) {
+    const connectionNames = this.getTraceConnectionNames(trace);
+    const originalIntervalContacts = this.getSameNetContactIds(
+      trace.route.slice(interval.startIndex, interval.endIndex + 1),
+      connectionNames,
+      this.traceIndex,
+    );
+    const contactsOutsideInterval = new Set([
+      ...this.getSameNetContactIds(
+        trace.route.slice(0, interval.startIndex + 1),
+        connectionNames,
+        this.traceIndex,
+      ),
+      ...this.getSameNetContactIds(
+        trace.route.slice(interval.endIndex),
+        connectionNames,
+        this.traceIndex,
+      ),
+    ]);
+    const requiredContacts = new Set(
+      [...originalIntervalContacts].filter(
+        (contactId) => !contactsOutsideInterval.has(contactId),
+      ),
+    );
+    if (requiredContacts.size === 0) return true;
+    const replacementContacts = this.getSameNetContactIds(
+      replacement,
+      connectionNames,
+      this.traceIndex,
+    );
+    return [...requiredContacts].every((contactId) =>
+      replacementContacts.has(contactId),
+    );
+  }
+
+  private sameNetContactsArePreserved(
+    before: SimplifiedPcbTrace["route"],
+    after: SimplifiedPcbTrace["route"],
+    connectionNames: string[],
+    ignoreTraceIndex: number,
+  ) {
+    const beforeContacts = this.getSameNetContactIds(
+      before,
+      connectionNames,
+      ignoreTraceIndex,
+    );
+    if (beforeContacts.size === 0) return true;
+    const afterContacts = this.getSameNetContactIds(
+      after,
+      connectionNames,
+      ignoreTraceIndex,
+    );
+    return [...beforeContacts].every((contactId) =>
+      afterContacts.has(contactId),
+    );
+  }
+
+  private getSameNetContactIds(
+    route: SimplifiedPcbTrace["route"],
+    connectionNames: string[],
+    ignoreTraceIndex: number,
+  ) {
+    const contactIds = new Set<string>();
+    for (let index = 0; index < route.length; index++) {
+      const point = route[index];
+      if (point?.route_type === "via") {
+        for (const layer of this.getViaLayers(point)) {
+          for (const contactId of this.obstacleIndex.getSameNetCopperContactIds(
+            {
+              start: point,
+              end: point,
+              layer,
+              width: point.via_diameter ?? 0.6,
+              connectionNames,
+              ignoreTraceIndex,
+            },
+          )) {
+            contactIds.add(contactId);
+          }
+        }
+        continue;
+      }
+      const next = route[index + 1];
+      if (
+        point?.route_type !== "wire" ||
+        next?.route_type !== "wire" ||
+        point.layer !== next.layer
+      ) {
+        continue;
+      }
+      for (const contactId of this.obstacleIndex.getSameNetCopperContactIds({
+        start: point,
+        end: next,
+        layer: point.layer,
+        width: Math.min(point.width, next.width),
+        connectionNames,
+        ignoreTraceIndex,
+      })) {
+        contactIds.add(contactId);
+      }
+    }
+    return contactIds;
+  }
+
+  private getViaLayers(via: ViaRoutePoint) {
+    const fromIndex = this.obstacleIndex.boardLayers.indexOf(via.from_layer);
+    const toIndex = this.obstacleIndex.boardLayers.indexOf(via.to_layer);
+    if (fromIndex < 0 || toIndex < 0) return this.obstacleIndex.boardLayers;
+    return this.obstacleIndex.boardLayers.slice(
+      Math.min(fromIndex, toIndex),
+      Math.max(fromIndex, toIndex) + 1,
+    );
   }
 
   private gridRouteReplacementCollides(output: GridRouteOutput) {
@@ -2258,6 +2433,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       repairedPadNeckSegmentCount: this.repairedPadNeckSegmentCount,
       unresolvedTraceClearanceSegmentCount:
         this.unresolvedTraceClearanceSegmentCount,
+      sameNetContactRejectionCount: this.sameNetContactRejectionCount,
       initialPadClearanceViolationCount: this.initialPadClearanceViolationCount,
       remainingPadClearanceViolationCount:
         this.remainingPadClearanceViolationCount,

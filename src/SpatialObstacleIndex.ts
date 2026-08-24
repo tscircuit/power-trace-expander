@@ -42,6 +42,7 @@ export class SpatialObstacleIndex {
   private readonly maxIndexedViaHoleDiameter: number;
   private readonly index: Flatbush | null;
   private readonly connectionNameSets: ReadonlySet<string>[];
+  private readonly copperObjectIds: string[];
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly connectedPads: ConnectedPad[];
   private readonly dynamicTraceIndex?: number;
@@ -75,8 +76,11 @@ export class SpatialObstacleIndex {
       simpleRouteJson.minViaHoleDiameter ??
       0.3;
     this.items = [
-      ...simpleRouteJson.obstacles.flatMap((obstacle) =>
-        approximateObstacleWithRects(obstacle),
+      ...simpleRouteJson.obstacles.flatMap((obstacle, obstacleIndex) =>
+        approximateObstacleWithRects(obstacle).map((item) => ({
+          ...item,
+          copperObjectId: `obstacle:${obstacleIndex}`,
+        })),
       ),
       ...this.createTraceItems(simpleRouteJson.fixedTraces ?? [], true),
       ...this.createTraceItems(traces),
@@ -96,6 +100,9 @@ export class SpatialObstacleIndex {
     this.connectionNameSets = this.items.map(
       (item) =>
         new Set(connectionNameResolver.canonicalize(item.connectionNames)),
+    );
+    this.copperObjectIds = this.items.map(
+      (item, itemIndex) => item.copperObjectId ?? `indexed-item:${itemIndex}`,
     );
     this.connectedPads = simpleRouteJson.obstacles.flatMap((obstacle) => {
       if (
@@ -131,6 +138,7 @@ export class SpatialObstacleIndex {
     for (let traceIndex = 0; traceIndex < traces.length; traceIndex++) {
       const trace = traces[traceIndex]!;
       const indexedTraceIndex = fixed ? undefined : traceIndex;
+      const copperObjectId = `${fixed ? "fixed-trace" : "trace"}:${traceIndex}`;
       const isDynamicTrace = !fixed && traceIndex === this.dynamicTraceIndex;
       const connectionNames = [
         trace.connection_name,
@@ -155,6 +163,7 @@ export class SpatialObstacleIndex {
             layers: this.boardLayers,
             kind: "via",
             connectionNames,
+            copperObjectId,
             traceIndex: indexedTraceIndex,
             routeStartIndex: routeIndex,
             routeEndIndex: routeIndex,
@@ -193,6 +202,7 @@ export class SpatialObstacleIndex {
               layers: [point.layer],
               kind: "trace",
               connectionNames,
+              copperObjectId,
               traceIndex: indexedTraceIndex,
               routeStartIndex: routeIndex,
               routeEndIndex: routeIndex + 1,
@@ -227,6 +237,48 @@ export class SpatialObstacleIndex {
       }
     }
     return collisions;
+  }
+
+  /**
+   * Returns the external same-net copper objects physically touched by a
+   * routed copper segment. Unlike clearance collision checks, this uses zero
+   * spacing so callers can preserve intentional pad and branch junctions.
+   */
+  getSameNetCopperContactIds(query: CollisionQuery): Set<string> {
+    const queryRadius = query.width / 2;
+    const candidates =
+      this.index?.search(
+        Math.min(query.start.x, query.end.x) - queryRadius,
+        Math.min(query.start.y, query.end.y) - queryRadius,
+        Math.max(query.start.x, query.end.x) + queryRadius,
+        Math.max(query.start.y, query.end.y) + queryRadius,
+      ) ?? [];
+    const canonicalConnectionNames = new Set(
+      this.connectionNameResolver.canonicalize(query.connectionNames),
+    );
+    const contacts = new Set<string>();
+
+    for (const itemIndex of candidates) {
+      const item = this.items[itemIndex]!;
+      if (!item.layers.includes(query.layer)) continue;
+      if (
+        item.traceIndex === query.ignoreTraceIndex ||
+        query.ignoreTraceIndices?.includes(item.traceIndex ?? -1)
+      ) {
+        continue;
+      }
+      if (
+        ![...this.connectionNameSets[itemIndex]!].some((name) =>
+          canonicalConnectionNames.has(name),
+        )
+      ) {
+        continue;
+      }
+      if (!this.itemCopperTouches(item, query, queryRadius)) continue;
+      contacts.add(this.copperObjectIds[itemIndex]!);
+    }
+
+    return contacts;
   }
 
   getConnectedPadWidthLimit(query: CollisionQuery): number | null {
@@ -653,6 +705,50 @@ export class SpatialObstacleIndex {
       minY: item.minY - itemRadius,
       maxX: item.maxX + itemRadius,
       maxY: item.maxY + itemRadius,
+    });
+  }
+
+  private itemCopperTouches(
+    item: IndexedObstacle,
+    query: CollisionQuery,
+    queryRadius: number,
+  ) {
+    if (item.exactShape?.type === "segment") {
+      return (
+        distanceSegmentToSegment(
+          query.start,
+          query.end,
+          item.exactShape.start,
+          item.exactShape.end,
+        ) <=
+        queryRadius + item.exactShape.width / 2 + 1e-9
+      );
+    }
+    if (item.exactShape?.type === "polygon") {
+      return (
+        distanceSegmentToPolygon(
+          query.start,
+          query.end,
+          item.exactShape.points,
+        ) <=
+        queryRadius + 1e-9
+      );
+    }
+    if (item.exactShape?.type === "circle") {
+      return (
+        distancePointToSegment(
+          item.exactShape.center,
+          query.start,
+          query.end,
+        ) <=
+        queryRadius + item.exactShape.radius + 1e-9
+      );
+    }
+    return segmentIntersectsRect(query.start, query.end, {
+      minX: item.minX - queryRadius,
+      minY: item.minY - queryRadius,
+      maxX: item.maxX + queryRadius,
+      maxY: item.maxY + queryRadius,
     });
   }
 
