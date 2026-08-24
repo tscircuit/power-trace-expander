@@ -5,6 +5,7 @@
       "**",
       "!!tests/__snapshots__",
       "!!fixtures/rp2040-dual-motor/input.json",
+      "!!fixtures/mangopi-r3c-power-disconnection/powerTraceExpansionSolver_input.json",
       "!!dist",
       "!!cosmos-export"
     ]
