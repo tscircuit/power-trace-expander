@@ -42,6 +42,7 @@ export class SpatialObstacleIndex {
   private readonly maxIndexedViaHoleDiameter: number;
   private readonly index: Flatbush | null;
   private readonly connectionNameSets: ReadonlySet<string>[];
+  private readonly copperObjectIds: string[];
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly connectedPads: ConnectedPad[];
   private readonly dynamicTraceIndex?: number;
@@ -75,8 +76,11 @@ export class SpatialObstacleIndex {
       simpleRouteJson.minViaHoleDiameter ??
       0.3;
     this.items = [
-      ...simpleRouteJson.obstacles.flatMap((obstacle) =>
-        approximateObstacleWithRects(obstacle),
+      ...simpleRouteJson.obstacles.flatMap((obstacle, obstacleIndex) =>
+        approximateObstacleWithRects(obstacle).map((item) => ({
+          ...item,
+          copperObjectId: `obstacle:${obstacleIndex}`,
+        })),
       ),
       ...this.createTraceItems(simpleRouteJson.fixedTraces ?? [], true),
       ...this.createTraceItems(traces),
@@ -96,6 +100,9 @@ export class SpatialObstacleIndex {
     this.connectionNameSets = this.items.map(
       (item) =>
         new Set(connectionNameResolver.canonicalize(item.connectionNames)),
+    );
+    this.copperObjectIds = this.items.map(
+      (item, itemIndex) => item.copperObjectId ?? `indexed-item:${itemIndex}`,
     );
     this.connectedPads = simpleRouteJson.obstacles.flatMap((obstacle) => {
       if (
@@ -131,6 +138,7 @@ export class SpatialObstacleIndex {
     for (let traceIndex = 0; traceIndex < traces.length; traceIndex++) {
       const trace = traces[traceIndex]!;
       const indexedTraceIndex = fixed ? undefined : traceIndex;
+      const copperObjectId = `${fixed ? "fixed-trace" : "trace"}:${traceIndex}`;
       const isDynamicTrace = !fixed && traceIndex === this.dynamicTraceIndex;
       const connectionNames = [
         trace.connection_name,
@@ -155,6 +163,7 @@ export class SpatialObstacleIndex {
             layers: this.boardLayers,
             kind: "via",
             connectionNames,
+            copperObjectId,
             traceIndex: indexedTraceIndex,
             routeStartIndex: routeIndex,
             routeEndIndex: routeIndex,
@@ -193,6 +202,7 @@ export class SpatialObstacleIndex {
               layers: [point.layer],
               kind: "trace",
               connectionNames,
+              copperObjectId,
               traceIndex: indexedTraceIndex,
               routeStartIndex: routeIndex,
               routeEndIndex: routeIndex + 1,
@@ -227,6 +237,48 @@ export class SpatialObstacleIndex {
       }
     }
     return collisions;
+  }
+
+  /**
+   * Returns the external same-net copper objects physically touched by a
+   * routed copper segment. Unlike clearance collision checks, this uses zero
+   * spacing so callers can preserve intentional pad and branch junctions.
+   */
+  getSameNetCopperContactIds(query: CollisionQuery): Set<string> {
+    const queryRadius = query.width / 2;
+    const candidates =
+      this.index?.search(
+        Math.min(query.start.x, query.end.x) - queryRadius,
+        Math.min(query.start.y, query.end.y) - queryRadius,
+        Math.max(query.start.x, query.end.x) + queryRadius,
+        Math.max(query.start.y, query.end.y) + queryRadius,
+      ) ?? [];
+    const canonicalConnectionNames = new Set(
+      this.connectionNameResolver.canonicalize(query.connectionNames),
+    );
+    const contacts = new Set<string>();
+
+    for (const itemIndex of candidates) {
+      const item = this.items[itemIndex]!;
+      if (!item.layers.includes(query.layer)) continue;
+      if (
+        item.traceIndex === query.ignoreTraceIndex ||
+        query.ignoreTraceIndices?.includes(item.traceIndex ?? -1)
+      ) {
+        continue;
+      }
+      if (
+        ![...this.connectionNameSets[itemIndex]!].some((name) =>
+          canonicalConnectionNames.has(name),
+        )
+      ) {
+        continue;
+      }
+      if (!this.itemCopperTouches(item, query, queryRadius)) continue;
+      contacts.add(this.copperObjectIds[itemIndex]!);
+    }
+
+    return contacts;
   }
 
   getConnectedPadWidthLimit(query: CollisionQuery): number | null {
@@ -444,23 +496,48 @@ export class SpatialObstacleIndex {
    * on the same net because the fabrication constraint is mechanical.
    */
   collidesVia(query: ViaCollisionQuery): boolean {
+    return this.getViaViolationSignatures(query).size > 0;
+  }
+
+  /**
+   * Returns stable rule/object signatures for every via violation. This lets
+   * phase checkpoints distinguish a newly introduced collider from unrelated
+   * baseline debt on the same via.
+   */
+  getViaViolationSignatures(query: ViaCollisionQuery): Set<string> {
+    const violations = new Set<string>();
     for (const layer of query.layers) {
-      if (
-        this.collides({
-          start: query.point,
-          end: query.point,
-          layer,
-          width: query.padDiameter,
-          connectionNames: query.connectionNames,
-          ignoreTraceIndex: query.ignoreTraceIndex,
-          ignoreTraceIndices: query.ignoreTraceIndices,
-          ignoreRouteRange: query.ignoreRouteRange,
-          obstacleClearance: query.obstacleClearance,
-          blockSameNetObstacles: query.blockSameNetObstacles,
-          sameNetObstacleClearance: query.sameNetObstacleClearance,
-        })
-      ) {
-        return true;
+      const collisionQuery: CollisionQuery = {
+        start: query.point,
+        end: query.point,
+        layer,
+        width: query.padDiameter,
+        connectionNames: query.connectionNames,
+        ignoreTraceIndex: query.ignoreTraceIndex,
+        ignoreTraceIndices: query.ignoreTraceIndices,
+        ignoreRouteRange: query.ignoreRouteRange,
+        obstacleClearance: query.obstacleClearance,
+        blockSameNetObstacles: query.blockSameNetObstacles,
+        sameNetObstacleClearance: query.sameNetObstacleClearance,
+      };
+      if (this.isOutsideBounds(collisionQuery)) {
+        violations.add(`board-edge:${layer}`);
+      }
+      const { radius, candidates, canonicalConnectionNames } =
+        this.getCollisionCandidates(collisionQuery);
+      for (const itemIndex of candidates) {
+        if (
+          this.itemCollides(
+            itemIndex,
+            collisionQuery,
+            radius,
+            canonicalConnectionNames,
+          )
+        ) {
+          violations.add(
+            `copper:${layer}:${this.getViolationObjectId(itemIndex)}`,
+          );
+        }
       }
     }
 
@@ -471,11 +548,19 @@ export class SpatialObstacleIndex {
         Math.hypot(point.x - query.point.x, point.y - query.point.y) <
         minimumNewViaSpacing - 1e-9
       ) {
-        return true;
+        violations.add(
+          `new-via-drill:${point.x},${point.y}:${query.holeDiameter}`,
+        );
       }
     }
 
-    for (const via of query.fixedVias ?? []) {
+    const fixedVias = query.fixedVias ?? [];
+    for (
+      let fixedViaIndex = 0;
+      fixedViaIndex < fixedVias.length;
+      fixedViaIndex++
+    ) {
+      const via = fixedVias[fixedViaIndex]!;
       const minimumSpacing =
         query.holeDiameter / 2 +
         via.holeDiameter / 2 +
@@ -484,7 +569,9 @@ export class SpatialObstacleIndex {
         Math.hypot(via.point.x - query.point.x, via.point.y - query.point.y) <
         minimumSpacing - 1e-9
       ) {
-        return true;
+        violations.add(
+          `fixed-via-drill:${fixedViaIndex}:${via.point.x},${via.point.y}:${via.holeDiameter}`,
+        );
       }
     }
 
@@ -515,7 +602,7 @@ export class SpatialObstacleIndex {
       if (query.ignoreTraceIndices?.includes(item.traceIndex ?? -1)) {
         continue;
       }
-      const key = `${item.traceIndex ?? -1}:${item.routeStartIndex ?? -1}`;
+      const key = `${this.copperObjectIds[itemIndex] ?? "unknown"}:${item.routeStartIndex ?? -1}`;
       if (seenTraceRoutePairs.has(key)) continue;
       seenTraceRoutePairs.add(key);
       const existingHoleDiameter =
@@ -531,10 +618,33 @@ export class SpatialObstacleIndex {
         ) <
         minimumSpacing - 1e-9
       ) {
-        return true;
+        violations.add(
+          `indexed-via-drill:${this.getViolationObjectId(itemIndex)}`,
+        );
       }
     }
-    return false;
+    return violations;
+  }
+
+  private getViolationObjectId(itemIndex: number) {
+    const item = this.items[itemIndex]!;
+    const objectId = this.copperObjectIds[itemIndex]!;
+    const routeRange = `${item.routeStartIndex ?? ""}-${item.routeEndIndex ?? ""}`;
+    if (item.kind === "obstacle") return objectId;
+    if (item.exactShape?.type === "segment") {
+      const { start, end, width } = item.exactShape;
+      return `${objectId}:${item.kind}:${routeRange}:${start.x},${start.y}:${end.x},${end.y}:${width}`;
+    }
+    if (item.exactShape?.type === "circle") {
+      const { center, radius } = item.exactShape;
+      return `${objectId}:${item.kind}:${routeRange}:${center.x},${center.y}:${radius}`;
+    }
+    if (item.exactShape?.type === "polygon") {
+      return `${objectId}:${item.kind}:${routeRange}:${item.exactShape.points
+        .map((point) => `${point.x},${point.y}`)
+        .join(";")}`;
+    }
+    return `${objectId}:${item.kind}:${routeRange}:${item.minX},${item.minY},${item.maxX},${item.maxY}`;
   }
 
   private getCollisionCandidates(query: CollisionQuery) {
@@ -653,6 +763,50 @@ export class SpatialObstacleIndex {
       minY: item.minY - itemRadius,
       maxX: item.maxX + itemRadius,
       maxY: item.maxY + itemRadius,
+    });
+  }
+
+  private itemCopperTouches(
+    item: IndexedObstacle,
+    query: CollisionQuery,
+    queryRadius: number,
+  ) {
+    if (item.exactShape?.type === "segment") {
+      return (
+        distanceSegmentToSegment(
+          query.start,
+          query.end,
+          item.exactShape.start,
+          item.exactShape.end,
+        ) <=
+        queryRadius + item.exactShape.width / 2 + 1e-9
+      );
+    }
+    if (item.exactShape?.type === "polygon") {
+      return (
+        distanceSegmentToPolygon(
+          query.start,
+          query.end,
+          item.exactShape.points,
+        ) <=
+        queryRadius + 1e-9
+      );
+    }
+    if (item.exactShape?.type === "circle") {
+      return (
+        distancePointToSegment(
+          item.exactShape.center,
+          query.start,
+          query.end,
+        ) <=
+        queryRadius + item.exactShape.radius + 1e-9
+      );
+    }
+    return segmentIntersectsRect(query.start, query.end, {
+      minX: item.minX - queryRadius,
+      minY: item.minY - queryRadius,
+      maxX: item.maxX + queryRadius,
+      maxY: item.maxY + queryRadius,
     });
   }
 
