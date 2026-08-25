@@ -180,6 +180,76 @@ test("shoves a connectionless local trace to escape a connected pad", async () =
   });
 });
 
+test("via repair respects selected trace indices", () => {
+  const problem = structuredClone(cleanupCases.routedViaInConnectedPad);
+  problem.traces.push({
+    type: "pcb_trace",
+    pcb_trace_id: "selected-clear-trace",
+    connection_name: "LOCAL_ONLY",
+    route: [
+      {
+        route_type: "wire",
+        x: -4,
+        y: 3,
+        width: 0.15,
+        layer: "top",
+      },
+      {
+        route_type: "wire",
+        x: 4,
+        y: 3,
+        width: 0.15,
+        layer: "top",
+      },
+    ],
+  });
+  const unselectedViaTrace = structuredClone(problem.traces[0]);
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+    traceIndices: [1],
+  });
+
+  solver.solve();
+
+  expect(solver.getOutput()[0]).toEqual(unselectedViaTrace);
+  expect(solver.stats.relocatedViaCount).toBe(0);
+});
+
+test("preserves the caller's selected trace priority", () => {
+  const problem = structuredClone(cleanupCases.routedViaInConnectedPad);
+  problem.traces.push({
+    type: "pcb_trace",
+    pcb_trace_id: "second-trace",
+    connection_name: "POWER",
+    route: [
+      {
+        route_type: "wire",
+        x: -4,
+        y: 3,
+        width: 0.8,
+        layer: "top",
+      },
+      {
+        route_type: "wire",
+        x: 4,
+        y: 3,
+        width: 0.8,
+        layer: "top",
+      },
+    ],
+  });
+
+  const solver = new PowerTraceCleanupSolver({
+    simpleRouteJson: problem,
+    traces: problem.traces,
+    traceIndices: [1, 0, 1],
+  });
+
+  expect(solver.stats.traceIndex).toBe(1);
+  expect(solver.stats.traceCount).toBe(2);
+});
+
 test("separates clustered same-net routed vias", async () => {
   const problem = structuredClone(cleanupCases.clusteredSameNetVias);
   const solver = new PowerTraceCleanupSolver({
