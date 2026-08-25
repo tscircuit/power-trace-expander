@@ -6,16 +6,96 @@ import { UPPER_P_MOTOR_A_CONNECTION } from "../fixtures/rp2040-dual-motor/create
 import rp2040DualMotorProblem from "../fixtures/rp2040-dual-motor/input.json";
 import { PowerTraceExpanderSolver, SpatialObstacleIndex } from "../src";
 import { countNonOctilinearSegments } from "../src/octilinear";
+import type { SimplifiedPcbTrace } from "../src/types";
 import { getTraceWidthMetrics } from "./helpers/getTraceWidthMetrics";
 
 setDefaultTimeout(60_000);
 
 const R_ISEN_B_GROUND_CONNECTION = "source_trace_141";
 
+const connectionOwnsTrace = (
+  problem: SimpleRouteJson,
+  trace: SimplifiedPcbTrace,
+) => {
+  const traceNames = [
+    trace.connection_name,
+    trace.source_trace_id,
+    trace.rootConnectionName,
+    ...(trace.mergedConnectionNames ?? []),
+  ].filter((name): name is string => Boolean(name));
+  return problem.connections.some((connection) =>
+    [
+      connection.name,
+      connection.source_trace_id,
+      connection.rootConnectionName,
+      connection.netConnectionName,
+      ...(connection.mergedConnectionNames ?? []),
+    ]
+      .filter((name): name is string => Boolean(name))
+      .some((name) => traceNames.includes(name)),
+  );
+};
+
+const getViaViolationKeys = (
+  problem: SimpleRouteJson,
+  traces: SimplifiedPcbTrace[],
+  traceIndices: number[],
+) => {
+  const index = new SpatialObstacleIndex(problem, traces);
+  const keys = new Set<string>();
+  for (const traceIndex of traceIndices) {
+    const trace = traces[traceIndex];
+    if (!trace) continue;
+    const connectionNames = [
+      trace.pcb_trace_id,
+      trace.connection_name,
+      trace.source_trace_id,
+      trace.rootConnectionName,
+      ...(trace.mergedConnectionNames ?? []),
+      ...(trace.connectsTo ?? []),
+    ].filter((name): name is string => Boolean(name));
+    for (let routeIndex = 0; routeIndex < trace.route.length; routeIndex++) {
+      const point = trace.route[routeIndex];
+      if (point?.route_type !== "via") continue;
+      if (
+        index.collidesVia({
+          point,
+          layers: index.boardLayers,
+          padDiameter: point.via_diameter ?? 0.6,
+          holeDiameter: point.via_hole_diameter ?? index.defaultViaHoleDiameter,
+          connectionNames,
+          ignoreTraceIndex: traceIndex,
+          ignoreRouteRange: { start: routeIndex, end: routeIndex },
+          blockSameNetObstacles: true,
+          sameNetObstacleClearance: 0,
+        })
+      ) {
+        keys.add(`${trace.pcb_trace_id}:${routeIndex}`);
+      }
+    }
+  }
+  return keys;
+};
+
 test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async () => {
   const problem = structuredClone(
     rp2040DualMotorProblem,
   ) as unknown as SimpleRouteJson;
+  const inputTraces = structuredClone(
+    problem.traces ?? [],
+  ) as SimplifiedPcbTrace[];
+  const ownedTraceIndices = inputTraces.flatMap((trace, traceIndex) =>
+    connectionOwnsTrace(problem, trace) ? [traceIndex] : [],
+  );
+  const ownedTraceIndexSet = new Set(ownedTraceIndices);
+  const immutableTraceIndices = inputTraces.flatMap((_, traceIndex) =>
+    ownedTraceIndexSet.has(traceIndex) ? [] : [traceIndex],
+  );
+  const inputImmutableViaViolationKeys = getViaViolationKeys(
+    problem,
+    inputTraces,
+    immutableTraceIndices,
+  );
   const before = getTraceWidthMetrics(problem, problem.traces ?? []);
   const conservativeBefore = getTraceWidthMetrics(
     problem,
@@ -124,8 +204,15 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(solver.simplifiedPathCount).toBeGreaterThanOrEqual(40);
   expect(solver.normalizedSegmentCount).toBeGreaterThanOrEqual(60);
   expect(solver.cleanupClearanceShoveCount).toBeGreaterThan(0);
-  expect(solver.relocatedViaCount).toBeGreaterThanOrEqual(5);
+  expect(solver.relocatedViaCount).toBeGreaterThanOrEqual(2);
   expect(solver.unresolvedViaCount).toBe(0);
+  expect(solver.stats).toMatchObject({
+    completionReason: "immutable_via_violations_preserved",
+    initialImmutableViaViolationCount: inputImmutableViaViolationKeys.size,
+    immutableTraceMutationIds: [],
+    immutableViaViolationRollbackCount: 0,
+    resultStatus: "best_effort",
+  });
   expect(solver.padClearanceRerouteCount).toBeGreaterThanOrEqual(4);
   expect(solver.remainingPadClearanceViolationCount).toBeLessThan(
     solver.initialPadClearanceViolationCount,
@@ -140,7 +227,10 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(
     solver.initialPadClearanceViolationCountByClearance["0.50"]! -
       solver.remainingPadClearanceViolationCountByClearance["0.50"]!,
-  ).toBeGreaterThanOrEqual(16);
+    // Cleanup is intentionally limited to the 53 traces directly owned by
+    // this SRJ. Earlier output reached a larger board-wide delta by rewriting
+    // opaque child-MST routes whose private terminals are unavailable here.
+  ).toBeGreaterThanOrEqual(6);
   const rIsenBGroundConnection = problem.connections.find(
     (connection) => connection.name === R_ISEN_B_GROUND_CONNECTION,
   )!;
@@ -171,40 +261,28 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
         ),
     );
   expect(rIsenBNearbyVias).toEqual([]);
-  const routedViaIndex = new SpatialObstacleIndex(problem, solver.getOutput());
-  for (
-    let traceIndex = 0;
-    traceIndex < solver.getOutput().length;
-    traceIndex++
-  ) {
-    const trace = solver.getOutput()[traceIndex]!;
-    const connectionNames = [
-      trace.pcb_trace_id,
-      trace.connection_name,
-      trace.source_trace_id,
-      trace.rootConnectionName,
-      ...(trace.mergedConnectionNames ?? []),
-      ...(trace.connectsTo ?? []),
-    ].filter((name): name is string => Boolean(name));
-    for (let routeIndex = 0; routeIndex < trace.route.length; routeIndex++) {
-      const point = trace.route[routeIndex];
-      if (point?.route_type !== "via") continue;
-      expect(
-        routedViaIndex.collidesVia({
-          point,
-          layers: routedViaIndex.boardLayers,
-          padDiameter: point.via_diameter ?? 0.6,
-          holeDiameter:
-            point.via_hole_diameter ?? routedViaIndex.defaultViaHoleDiameter,
-          connectionNames,
-          ignoreTraceIndex: traceIndex,
-          ignoreRouteRange: { start: routeIndex, end: routeIndex },
-          blockSameNetObstacles: true,
-          sameNetObstacleClearance: 0,
-        }),
-      ).toBe(false);
-    }
+  const outputTraces = solver.getOutput();
+  for (const traceIndex of immutableTraceIndices) {
+    expect(outputTraces[traceIndex]).toEqual(inputTraces[traceIndex]);
   }
+  const outputOwnedViaViolationKeys = getViaViolationKeys(
+    problem,
+    outputTraces,
+    ownedTraceIndices,
+  );
+  expect(outputOwnedViaViolationKeys).toEqual(new Set());
+  const outputImmutableViaViolationKeys = getViaViolationKeys(
+    problem,
+    outputTraces,
+    immutableTraceIndices,
+  );
+  for (const violationKey of outputImmutableViaViolationKeys) {
+    expect(inputImmutableViaViolationKeys.has(violationKey)).toBe(true);
+  }
+  expect(solver.stats).toMatchObject({
+    remainingImmutableViaViolationCount: outputImmutableViaViolationKeys.size,
+    skippedImmutableViaRepairCount: outputImmutableViaViolationKeys.size,
+  });
   // Core may reverse this route when it maps the solver result back to the
   // source trace. Cleanup must preserve the narrow boundary width so the
   // reversed segment cannot become a 1 mm USB fanout collision.

@@ -1,22 +1,9 @@
 import { expect, test } from "bun:test";
 import { mangopiR3cPowerDisconnectionConstructorTuple } from "../fixtures/mangopi-r3c-power-disconnection/getMangoPiR3cPowerDisconnectionInput";
 import { PowerTraceExpanderSolver } from "../src";
-import { getPhysicalEndpointConnectivity } from "./helpers/getPhysicalEndpointConnectivity";
+import { PhysicalConnectivityInvariant } from "../src/PhysicalConnectivityInvariant";
 
 const fixturePath = `${import.meta.dir}/../fixtures/mangopi-r3c-power-disconnection/powerTraceExpansionSolver_input.json`;
-
-const getConnectionConnectivity = (
-  report: ReturnType<typeof getPhysicalEndpointConnectivity>,
-  connectionName: string,
-) => {
-  const connection = report.connections.find(
-    (candidate) => candidate.connectionName === connectionName,
-  );
-  if (!connection) {
-    throw new Error(`Missing physical connectivity for ${connectionName}`);
-  }
-  return connection;
-};
 
 test("preserves MangoPi R3C physical endpoint connectivity during power expansion", async () => {
   const fixtureBytes = await Bun.file(fixturePath).arrayBuffer();
@@ -26,14 +13,39 @@ test("preserves MangoPi R3C physical endpoint connectivity during power expansio
 
   const [inputProblem, options] = mangopiR3cPowerDisconnectionConstructorTuple;
   const inputTraces = inputProblem.traces ?? [];
-  const inputConnectivity = getPhysicalEndpointConnectivity({
+  const connectivityInvariant = new PhysicalConnectivityInvariant(
     inputProblem,
-    routedTraces: inputTraces,
-  });
-  const inputGroundConnectivity = getConnectionConnectivity(
-    inputConnectivity,
-    "source_net_0",
+    inputTraces,
   );
+  const countConnectedToFirstEndpoint = (
+    componentByEndpointKey: Record<string, string>,
+    connectionIndex: number,
+  ) => {
+    const firstComponent = componentByEndpointKey[`${connectionIndex}:0`];
+    return inputProblem.connections[connectionIndex]!.pointsToConnect.reduce(
+      (count, _, endpointIndex) =>
+        count +
+        Number(
+          componentByEndpointKey[`${connectionIndex}:${endpointIndex}`] ===
+            firstComponent,
+        ),
+      0,
+    );
+  };
+  const countFullyConnectedConnections = (
+    componentByEndpointKey: Record<string, string>,
+  ) =>
+    inputProblem.connections.reduce(
+      (count, connection, connectionIndex) =>
+        count +
+        Number(
+          countConnectedToFirstEndpoint(
+            componentByEndpointKey,
+            connectionIndex,
+          ) === connection.pointsToConnect.length,
+        ),
+      0,
+    );
 
   expect(inputProblem.connections).toHaveLength(113);
   expect(
@@ -56,16 +68,29 @@ test("preserves MangoPi R3C physical endpoint connectivity during power expansio
   expect(inputProblem.differentialPairs).toHaveLength(2);
   expect(options).toMatchObject({ allowNewVias: false });
   expect(options.onlyConnectionNames).toHaveLength(20);
-  expect(inputConnectivity).toMatchObject({
-    checkedConnectionCount: 113,
-    connectedConnectionCount: 107,
-    checkedEndpointCount: 518,
-    connectedEndpointCount: 502,
-  });
-  expect(inputGroundConnectivity).toMatchObject({
-    checkedEndpointCount: 99,
-    connectedEndpointCount: 95,
-  });
+  expect(connectivityInvariant.baseline.endpointCount).toBe(518);
+  expect(
+    countFullyConnectedConnections(
+      connectivityInvariant.baseline.componentByEndpointKey,
+    ),
+  ).toBe(107);
+  expect(
+    inputProblem.connections.reduce(
+      (count, _, connectionIndex) =>
+        count +
+        countConnectedToFirstEndpoint(
+          connectivityInvariant.baseline.componentByEndpointKey,
+          connectionIndex,
+        ),
+      0,
+    ),
+  ).toBe(502);
+  expect(
+    countConnectedToFirstEndpoint(
+      connectivityInvariant.baseline.componentByEndpointKey,
+      4,
+    ),
+  ).toBe(95);
 
   const solver = new PowerTraceExpanderSolver(
     structuredClone(inputProblem),
@@ -83,35 +108,38 @@ test("preserves MangoPi R3C physical endpoint connectivity during power expansio
     cleanupCompleted: true,
     clearanceRepairCompleted: true,
     completionReason: "expansion_budget",
+    connectivityRollbackCount: 0,
+    connectivityValidationError: null,
     resultStatus: "best_effort",
   });
   expect(solver.sameNetContactRejectionCount).toBeGreaterThan(0);
+  expect(solver.getOutput()).not.toEqual(inputTraces);
 
-  const outputProblem = {
-    ...structuredClone(inputProblem),
-    traces: solver.getOutput(),
-  };
-  const outputConnectivity = getPhysicalEndpointConnectivity({
-    inputProblem: outputProblem,
-    routedTraces: outputProblem.traces,
-  });
-  const outputGroundConnectivity = getConnectionConnectivity(
-    outputConnectivity,
-    "source_net_0",
-  );
-  expect(outputConnectivity.checkedConnectionCount).toBe(113);
-  expect(outputConnectivity.checkedEndpointCount).toBe(518);
-  for (const inputConnection of inputConnectivity.connections) {
-    const outputConnection = getConnectionConnectivity(
-      outputConnectivity,
-      inputConnection.connectionName,
-    );
-    expect(outputConnection.connectedEndpointCount).toBeGreaterThanOrEqual(
-      inputConnection.connectedEndpointCount,
-    );
-  }
-  expect(outputGroundConnectivity.checkedEndpointCount).toBe(99);
+  const outputConnectivity = connectivityInvariant.validate(solver.getOutput());
+  expect(outputConnectivity.candidate.endpointCount).toBe(518);
+  expect(outputConnectivity.regressions).toEqual([]);
+  expect(outputConnectivity.safe).toBe(true);
+  expect(outputConnectivity.validationError).toBeUndefined();
   expect(
-    outputGroundConnectivity.connectedEndpointCount,
-  ).toBeGreaterThanOrEqual(inputGroundConnectivity.connectedEndpointCount);
+    countFullyConnectedConnections(
+      outputConnectivity.candidate.componentByEndpointKey,
+    ),
+  ).toBeGreaterThanOrEqual(107);
+  expect(
+    inputProblem.connections.reduce(
+      (count, _, connectionIndex) =>
+        count +
+        countConnectedToFirstEndpoint(
+          outputConnectivity.candidate.componentByEndpointKey,
+          connectionIndex,
+        ),
+      0,
+    ),
+  ).toBeGreaterThanOrEqual(502);
+  expect(
+    countConnectedToFirstEndpoint(
+      outputConnectivity.candidate.componentByEndpointKey,
+      4,
+    ),
+  ).toBeGreaterThanOrEqual(95);
 }, 9_999_999);
