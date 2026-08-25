@@ -318,7 +318,16 @@ test("final acceptance rolls back an opaque child mutation", () => {
   );
   expect(solver.getOutput()).toEqual(original);
   expect(solver.immutableTraceMutationIds).toEqual(["opaque-child"]);
-  expect(solver.connectivityRollbackPhases).toContain("final");
+  expect(solver.connectivityRollbackCount).toBe(0);
+  expect(solver.immutableSafetyRollbackCount).toBe(1);
+  expect(solver.immutableSafetyRollbackPhases).toEqual(["final"]);
+  solver.tryFinalAcceptance();
+  expect(solver.stats).toMatchObject({
+    completionReason: "immutable_safety_rollback",
+    connectivityRollbackCount: 0,
+    immutableSafetyRollbackCount: 1,
+    resultStatus: "best_effort",
+  });
 });
 
 test("final acceptance rejects a new collision with an immutable via", () => {
@@ -328,6 +337,15 @@ test("final acceptance rejects a new collision with an immutable via", () => {
     { x: 2, y: 2, layer: "top" },
   ];
   input.traces![0]!.route = [testWire(-2, 2), testWire(2, 2)];
+  input.obstacles.push({
+    type: "rect",
+    obstacleId: "existing-child-pad-violation",
+    center: { x: 0, y: 0 },
+    width: 0.4,
+    height: 0.4,
+    layers: ["top"],
+    connectedTo: ["CHILD"],
+  });
   input.traces!.push({
     type: "pcb_trace",
     pcb_trace_id: "opaque-via",
@@ -363,13 +381,21 @@ test("final acceptance rejects a new collision with an immutable via", () => {
     ) => boolean;
   };
 
-  expect(solver.initialImmutableViaViolationCount).toBe(0);
+  expect(solver.initialImmutableViaViolationCount).toBe(1);
+  expect(solver.initialImmutableViaViolationPairCount).toBe(1);
   expect(internalSolver.acceptConnectivityCheckpoint(candidate, "final")).toBe(
     false,
   );
   expect(solver.getOutput()).toEqual(original);
   expect(solver.immutableViaViolationRollbackCount).toBe(1);
-  expect(solver.immutableViaViolationRegressionIds).toEqual(["opaque-via:1"]);
+  expect(
+    solver.immutableViaViolationRegressionIds.some((signature) =>
+      signature.includes("|copper:top:trace:0"),
+    ),
+  ).toBe(true);
+  expect(solver.connectivityRollbackCount).toBe(0);
+  expect(solver.immutableSafetyRollbackCount).toBe(1);
+  expect(solver.immutableSafetyRollbackPhases).toEqual(["final"]);
 });
 
 test("keeps an unowned child blocker immutable during local inflation", () => {
@@ -537,6 +563,64 @@ test("keeps same-net via drills mechanically separated", () => {
       holeDiameter: 0.2,
       connectionNames: ["POWER"],
     }),
+  ).toBe(true);
+});
+
+test("checks same-index vias from distinct fixed traces independently", () => {
+  const input = structuredClone(centralObstacleFixture);
+  input.obstacles = [];
+  input.traces = [];
+  input.minViaHoleEdgeToViaHoleEdgeClearance = 0.2;
+  input.fixedTraces = [
+    {
+      type: "pcb_trace",
+      pcb_trace_id: "fixed-via-outside-drill-radius",
+      connection_name: "POWER",
+      route: [
+        testWire(-1, -1),
+        {
+          route_type: "via",
+          x: 0.35,
+          y: 0.35,
+          from_layer: "top",
+          to_layer: "bottom",
+          via_diameter: 0.01,
+          via_hole_diameter: 0.2,
+        },
+      ],
+    },
+    {
+      type: "pcb_trace",
+      pcb_trace_id: "fixed-via-inside-drill-radius",
+      connection_name: "POWER",
+      route: [
+        testWire(1, 1),
+        {
+          route_type: "via",
+          x: 0.2,
+          y: 0,
+          from_layer: "top",
+          to_layer: "bottom",
+          via_diameter: 0.01,
+          via_hole_diameter: 0.2,
+        },
+      ],
+    },
+  ];
+  const index = new SpatialObstacleIndex(input, []);
+  const query = {
+    point: { x: 0, y: 0 },
+    layers: ["top", "bottom"],
+    padDiameter: 0.01,
+    holeDiameter: 0.2,
+    connectionNames: ["POWER"],
+  };
+
+  expect(index.collidesVia(query)).toBe(true);
+  expect(
+    [...index.getViaViolationSignatures(query)].some((signature) =>
+      signature.includes("fixed-trace:1"),
+    ),
   ).toBe(true);
 });
 

@@ -158,10 +158,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   unresolvedViaCount = 0;
   initialImmutableViaViolationCount = 0;
   remainingImmutableViaViolationCount = 0;
+  initialImmutableViaViolationPairCount = 0;
+  remainingImmutableViaViolationPairCount = 0;
   immutableTraceMutationIds: string[] = [];
-  private lastSafeImmutableViaViolationKeys = new Set<string>();
+  private lastSafeImmutableViaViolationSignatures = new Set<string>();
   immutableViaViolationRollbackCount = 0;
   attemptedImmutableViaViolationCount: number | null = null;
+  attemptedImmutableViaViolationPairCount: number | null = null;
   immutableViaViolationRegressionIds: string[] = [];
   padClearanceRerouteCount = 0;
   unresolvedPadClearanceCount = 0;
@@ -172,9 +175,12 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   connectivityValidationCount = 0;
   connectivityRollbackCount = 0;
   readonly connectivityRollbackPhases: ConnectivityCheckpointPhase[] = [];
+  immutableSafetyRollbackCount = 0;
+  readonly immutableSafetyRollbackPhases: ConnectivityCheckpointPhase[] = [];
   connectivityRegressionEndpointIds: string[] = [];
   connectivityValidationError: string | null = null;
   connectivityRollbackMutationStats: Record<string, number> | null = null;
+  immutableSafetyRollbackMutationStats: Record<string, number> | null = null;
   discardedExpansionMutationStats: Record<string, number> | null = null;
   initialPadClearanceViolationCount = 0;
   remainingPadClearanceViolationCount = 0;
@@ -288,13 +294,17 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       [],
       this.connectionNameResolver,
     );
-    this.lastSafeImmutableViaViolationKeys = this.getImmutableViaViolationKeys(
-      this.traces,
+    this.lastSafeImmutableViaViolationSignatures =
+      this.getImmutableViaViolationSignatures(this.traces);
+    this.initialImmutableViaViolationCount = this.countViolatingImmutableVias(
+      this.lastSafeImmutableViaViolationSignatures,
     );
-    this.initialImmutableViaViolationCount =
-      this.lastSafeImmutableViaViolationKeys.size;
     this.remainingImmutableViaViolationCount =
       this.initialImmutableViaViolationCount;
+    this.initialImmutableViaViolationPairCount =
+      this.lastSafeImmutableViaViolationSignatures.size;
+    this.remainingImmutableViaViolationPairCount =
+      this.initialImmutableViaViolationPairCount;
     this.activeSubSolver = null;
     this.MAX_ITERATIONS = TOTAL_ITERATION_BUDGET;
     this.stats = this.createStats();
@@ -496,6 +506,12 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
   private rollbackConnectivityRegressedExpansion() {
     this.connectivityRollbackMutationStats =
+      this.captureAndResetExpansionMutationStats();
+    this.restoreLastConnectivitySafeTraces();
+  }
+
+  private rollbackImmutableUnsafeExpansion() {
+    this.immutableSafetyRollbackMutationStats =
       this.captureAndResetExpansionMutationStats();
     this.restoreLastConnectivitySafeTraces();
   }
@@ -2553,9 +2569,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     });
   }
 
-  private getImmutableViaViolationKeys(candidateTraces: SimplifiedPcbTrace[]) {
-    const violationKeys = new Set<string>();
-    if (this.immutableTraceIndices.length === 0) return violationKeys;
+  private getImmutableViaViolationSignatures(
+    candidateTraces: SimplifiedPcbTrace[],
+  ) {
+    const violationSignatures = new Set<string>();
+    if (this.immutableTraceIndices.length === 0) return violationSignatures;
     const resolver = new ConnectionNameResolver(
       this.inputProblem,
       candidateTraces,
@@ -2581,30 +2599,34 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       for (let routeIndex = 0; routeIndex < trace.route.length; routeIndex++) {
         const point = trace.route[routeIndex];
         if (point?.route_type !== "via") continue;
-        if (
-          index.collidesVia({
-            point,
-            layers: index.boardLayers,
-            padDiameter:
-              point.via_diameter ??
-              this.inputProblem.min_via_pad_diameter ??
-              this.inputProblem.minViaPadDiameter ??
-              this.inputProblem.minViaDiameter ??
-              0.6,
-            holeDiameter:
-              point.via_hole_diameter ?? index.defaultViaHoleDiameter,
-            connectionNames,
-            ignoreTraceIndex: traceIndex,
-            ignoreRouteRange: { start: routeIndex, end: routeIndex },
-            blockSameNetObstacles: true,
-            sameNetObstacleClearance: 0,
-          })
-        ) {
-          violationKeys.add(`${trace.pcb_trace_id}:${routeIndex}`);
+        const viaId = `${trace.pcb_trace_id}:${routeIndex}`;
+        const signatures = index.getViaViolationSignatures({
+          point,
+          layers: index.boardLayers,
+          padDiameter:
+            point.via_diameter ??
+            this.inputProblem.min_via_pad_diameter ??
+            this.inputProblem.minViaPadDiameter ??
+            this.inputProblem.minViaDiameter ??
+            0.6,
+          holeDiameter: point.via_hole_diameter ?? index.defaultViaHoleDiameter,
+          connectionNames,
+          ignoreTraceIndex: traceIndex,
+          ignoreRouteRange: { start: routeIndex, end: routeIndex },
+          blockSameNetObstacles: true,
+          sameNetObstacleClearance: 0,
+        });
+        for (const signature of signatures) {
+          violationSignatures.add(`${viaId}|${signature}`);
         }
       }
     }
-    return violationKeys;
+    return violationSignatures;
+  }
+
+  private countViolatingImmutableVias(signatures: Set<string>) {
+    return new Set([...signatures].map((signature) => signature.split("|")[0]))
+      .size;
   }
 
   private acceptConnectivityCheckpoint(
@@ -2612,28 +2634,35 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     phase: ConnectivityCheckpointPhase,
   ) {
     this.connectivityValidationCount++;
+    let connectivityUnsafe = false;
+    let immutableSafetyUnsafe = false;
     try {
       const validation = this.connectivityInvariant.validate(candidateTraces);
       const mutatedImmutableTraceIds =
         this.getMutatedImmutableTraceIds(candidateTraces);
-      const immutableViaViolationKeys =
-        this.getImmutableViaViolationKeys(candidateTraces);
-      const newImmutableViaViolationKeys = [
-        ...immutableViaViolationKeys,
-      ].filter((key) => !this.lastSafeImmutableViaViolationKeys.has(key));
+      const immutableViaViolationSignatures =
+        this.getImmutableViaViolationSignatures(candidateTraces);
+      const newImmutableViaViolationSignatures = [
+        ...immutableViaViolationSignatures,
+      ].filter(
+        (signature) =>
+          !this.lastSafeImmutableViaViolationSignatures.has(signature),
+      );
       const worsenedImmutableViaViolations =
-        newImmutableViaViolationKeys.length > 0;
+        newImmutableViaViolationSignatures.length > 0;
+      connectivityUnsafe = !validation.safe;
+      immutableSafetyUnsafe =
+        mutatedImmutableTraceIds.length > 0 || worsenedImmutableViaViolations;
       this.connectivityValidationError ??= validation.validationError ?? null;
-      if (
-        validation.safe &&
-        mutatedImmutableTraceIds.length === 0 &&
-        !worsenedImmutableViaViolations
-      ) {
+      if (!connectivityUnsafe && !immutableSafetyUnsafe) {
         this.traces = structuredClone(candidateTraces);
         this.lastConnectivitySafeTraces = structuredClone(candidateTraces);
         this.remainingImmutableViaViolationCount =
-          immutableViaViolationKeys.size;
-        this.lastSafeImmutableViaViolationKeys = immutableViaViolationKeys;
+          this.countViolatingImmutableVias(immutableViaViolationSignatures);
+        this.remainingImmutableViaViolationPairCount =
+          immutableViaViolationSignatures.size;
+        this.lastSafeImmutableViaViolationSignatures =
+          immutableViaViolationSignatures;
         // Preserve connectivity gained by a successful phase as well as the
         // original input connectivity. Later phases may merge components but
         // may not split the latest validated partition.
@@ -2652,11 +2681,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       if (worsenedImmutableViaViolations) {
         this.immutableViaViolationRollbackCount++;
         this.attemptedImmutableViaViolationCount =
-          immutableViaViolationKeys.size;
+          this.countViolatingImmutableVias(immutableViaViolationSignatures);
+        this.attemptedImmutableViaViolationPairCount =
+          immutableViaViolationSignatures.size;
         this.immutableViaViolationRegressionIds = [
           ...new Set([
             ...this.immutableViaViolationRegressionIds,
-            ...newImmutableViaViolationKeys,
+            ...newImmutableViaViolationSignatures,
           ]),
         ];
       }
@@ -2669,21 +2700,37 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         ]),
       ];
     } catch (error) {
+      connectivityUnsafe = true;
       this.connectivityValidationError =
         error instanceof Error ? error.message : String(error);
     }
 
-    this.connectivityRollbackCount++;
-    if (!this.connectivityRollbackPhases.includes(phase)) {
-      this.connectivityRollbackPhases.push(phase);
+    if (connectivityUnsafe) {
+      this.connectivityRollbackCount++;
+      if (!this.connectivityRollbackPhases.includes(phase)) {
+        this.connectivityRollbackPhases.push(phase);
+      }
+    }
+    if (immutableSafetyUnsafe) {
+      this.immutableSafetyRollbackCount++;
+      if (!this.immutableSafetyRollbackPhases.includes(phase)) {
+        this.immutableSafetyRollbackPhases.push(phase);
+      }
     }
     if (phase === "expansion") {
-      this.rollbackConnectivityRegressedExpansion();
+      if (connectivityUnsafe) {
+        this.rollbackConnectivityRegressedExpansion();
+      } else {
+        this.rollbackImmutableUnsafeExpansion();
+      }
     } else {
       this.restoreLastConnectivitySafeTraces();
     }
-    this.remainingImmutableViaViolationCount =
-      this.lastSafeImmutableViaViolationKeys.size;
+    this.remainingImmutableViaViolationCount = this.countViolatingImmutableVias(
+      this.lastSafeImmutableViaViolationSignatures,
+    );
+    this.remainingImmutableViaViolationPairCount =
+      this.lastSafeImmutableViaViolationSignatures.size;
     return false;
   }
 
@@ -2794,11 +2841,17 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       initialImmutableViaViolationCount: this.initialImmutableViaViolationCount,
       remainingImmutableViaViolationCount:
         this.remainingImmutableViaViolationCount,
+      initialImmutableViaViolationPairCount:
+        this.initialImmutableViaViolationPairCount,
+      remainingImmutableViaViolationPairCount:
+        this.remainingImmutableViaViolationPairCount,
       skippedImmutableViaRepairCount: this.remainingImmutableViaViolationCount,
       immutableViaViolationRollbackCount:
         this.immutableViaViolationRollbackCount,
       attemptedImmutableViaViolationCount:
         this.attemptedImmutableViaViolationCount,
+      attemptedImmutableViaViolationPairCount:
+        this.attemptedImmutableViaViolationPairCount,
       immutableViaViolationRegressionIds: [
         ...this.immutableViaViolationRegressionIds,
       ],
@@ -2814,6 +2867,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       connectivityValidationCount: this.connectivityValidationCount,
       connectivityRollbackCount: this.connectivityRollbackCount,
       connectivityRollbackPhases: [...this.connectivityRollbackPhases],
+      immutableSafetyRollbackCount: this.immutableSafetyRollbackCount,
+      immutableSafetyRollbackPhases: [...this.immutableSafetyRollbackPhases],
       connectivityRegressionEndpointIds: [
         ...this.connectivityRegressionEndpointIds,
       ],
@@ -2822,6 +2877,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         this.connectivityRollbackMutationStats === null
           ? null
           : { ...this.connectivityRollbackMutationStats },
+      immutableSafetyRollbackMutationStats:
+        this.immutableSafetyRollbackMutationStats === null
+          ? null
+          : { ...this.immutableSafetyRollbackMutationStats },
       expansionPushedTraceIndices: [...this.expansionPushedTraceIndices],
       cleanupMutatedTraceIndices: [...this.cleanupMutatedTraceIndices],
       discardedExpansionMutationStats:
@@ -2845,24 +2904,28 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       clearanceRepairBestEffortAccepted: this.clearanceRepairBestEffortAccepted,
       cleanupStatus: this.connectivityRollbackPhases.includes("cleanup")
         ? "connectivity_rollback"
-        : this.cleanupBestEffortAccepted
-          ? "budget_limited"
-          : this.cleanupCompleted
-            ? "completed"
-            : this.phase === "cleanup"
-              ? "in_progress"
-              : "not_started",
+        : this.immutableSafetyRollbackPhases.includes("cleanup")
+          ? "immutable_safety_rollback"
+          : this.cleanupBestEffortAccepted
+            ? "budget_limited"
+            : this.cleanupCompleted
+              ? "completed"
+              : this.phase === "cleanup"
+                ? "in_progress"
+                : "not_started",
       clearanceRepairStatus: this.connectivityRollbackPhases.includes(
         "clearance-repair",
       )
         ? "connectivity_rollback"
-        : this.clearanceRepairBestEffortAccepted
-          ? "budget_limited"
-          : this.clearanceRepairCompleted
-            ? "completed"
-            : this.phase === "repair-trace-clearance"
-              ? "in_progress"
-              : "not_started",
+        : this.immutableSafetyRollbackPhases.includes("clearance-repair")
+          ? "immutable_safety_rollback"
+          : this.clearanceRepairBestEffortAccepted
+            ? "budget_limited"
+            : this.clearanceRepairCompleted
+              ? "completed"
+              : this.phase === "repair-trace-clearance"
+                ? "in_progress"
+                : "not_started",
       cleanupIterationBudget: this.cleanupIterationBudget,
       clearanceRepairIterationBudget: this.clearanceRepairIterationBudget,
       completionReason:
@@ -2870,25 +2933,28 @@ export class PowerTraceExpanderSolver extends BaseSolver {
           ? null
           : this.connectivityRollbackCount > 0
             ? "connectivity_rollback"
-            : this.connectivityValidationError
-              ? "connectivity_validation_unavailable"
-              : this.finalAcceptanceUsed
-                ? "total_iteration_budget"
-                : this.budgetLimitedExpansion
-                  ? "expansion_budget"
-                  : this.cleanupBestEffortAccepted
-                    ? "cleanup_budget"
-                    : this.clearanceRepairBestEffortAccepted
-                      ? "clearance_repair_budget"
-                      : this.remainingImmutableViaViolationCount > 0
-                        ? "immutable_via_violations_preserved"
-                        : "completed",
+            : this.immutableSafetyRollbackCount > 0
+              ? "immutable_safety_rollback"
+              : this.connectivityValidationError
+                ? "connectivity_validation_unavailable"
+                : this.finalAcceptanceUsed
+                  ? "total_iteration_budget"
+                  : this.budgetLimitedExpansion
+                    ? "expansion_budget"
+                    : this.cleanupBestEffortAccepted
+                      ? "cleanup_budget"
+                      : this.clearanceRepairBestEffortAccepted
+                        ? "clearance_repair_budget"
+                        : this.remainingImmutableViaViolationCount > 0
+                          ? "immutable_via_violations_preserved"
+                          : "completed",
       resultStatus:
         this.finalAcceptanceUsed ||
         this.budgetLimitedExpansion ||
         this.cleanupBestEffortAccepted ||
         this.clearanceRepairBestEffortAccepted ||
         this.connectivityRollbackCount > 0 ||
+        this.immutableSafetyRollbackCount > 0 ||
         this.connectivityValidationError !== null ||
         this.remainingImmutableViaViolationCount > 0
           ? "best_effort"
