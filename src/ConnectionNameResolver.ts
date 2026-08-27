@@ -31,6 +31,10 @@ const getPositionLayerAlias = (
  */
 export class ConnectionNameResolver {
   private readonly parent = new Map<string, string>();
+  private readonly canonicalNamesByInput = new WeakMap<
+    string[],
+    { inputSnapshot: string[]; canonicalNames: string[] }
+  >();
 
   constructor(
     simpleRouteJson: SimpleRouteJson,
@@ -91,8 +95,22 @@ export class ConnectionNameResolver {
     }
   }
 
-  canonicalize(names: string[]) {
-    return [...new Set(names.map((name) => this.find(name)))];
+  canonicalize(names: string[]): string[] {
+    const cached = this.canonicalNamesByInput.get(names);
+    if (
+      cached &&
+      cached.inputSnapshot.length === names.length &&
+      cached.inputSnapshot.every((name, index) => name === names[index])
+    ) {
+      return [...cached.canonicalNames];
+    }
+
+    const canonicalNames = [...new Set(names.map((name) => this.find(name)))];
+    this.canonicalNamesByInput.set(names, {
+      inputSnapshot: [...names],
+      canonicalNames,
+    });
+    return [...canonicalNames];
   }
 
   private unionAll(names: string[]) {
