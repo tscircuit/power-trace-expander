@@ -13,7 +13,10 @@ import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
 import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
 import { PowerTraceCleanupSolver } from "./PowerTraceCleanupSolver";
 import { PowerTraceClearanceRepairSolver } from "./PowerTraceClearanceRepairSolver";
-import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
+import {
+  SpatialObstacleIndex,
+  SpatialObstacleIndexStaticCache,
+} from "./SpatialObstacleIndex";
 import type {
   GridOffset,
   GridRouteOutput,
@@ -99,6 +102,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   traces: SimplifiedPcbTrace[];
   obstacleIndex: SpatialObstacleIndex;
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly spatialIndexStaticCache: SpatialObstacleIndexStaticCache;
   private readonly connectionByTraceId = new Map<
     string,
     SimpleRouteConnection | null
@@ -227,6 +231,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.inputProblem,
       this.traces,
     );
+    this.spatialIndexStaticCache = new SpatialObstacleIndexStaticCache(
+      this.inputProblem,
+      this.connectionNameResolver,
+    );
     this.lastConnectivitySafeTraces = structuredClone(this.traces);
     this.connectivityInvariant = new PhysicalConnectivityInvariant(
       this.inputProblem,
@@ -293,6 +301,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.traceIndex >= 0 ? this.traceIndex : undefined,
       [],
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
     this.lastSafeImmutableViaViolationSignatures =
       this.getImmutableViaViolationSignatures(this.traces);
@@ -426,15 +435,19 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.acceptConnectivityCheckpoint(this.traces, "expansion");
     this.traceIndex = this.traces.length;
     this.phase = "cleanup";
-    const cleanupSolver = new PowerTraceCleanupSolver({
-      simpleRouteJson: this.inputProblem,
-      traces: this.traces,
-      traceIndices: this.selectedCleanupTraceIndices,
-      viaRepairTraceIndices: this.selectedViaRepairTraceIndices,
-      mutableTraceIndices: this.mutableBlockerTraceIndices,
-      maxRerouteLength: 10,
-      desiredPadClearance: this.options.powerTraceToPadClearance,
-    });
+    const cleanupSolver = new PowerTraceCleanupSolver(
+      {
+        simpleRouteJson: this.inputProblem,
+        traces: this.traces,
+        traceIndices: this.selectedCleanupTraceIndices,
+        viaRepairTraceIndices: this.selectedViaRepairTraceIndices,
+        mutableTraceIndices: this.mutableBlockerTraceIndices,
+        maxRerouteLength: 10,
+        desiredPadClearance: this.options.powerTraceToPadClearance,
+      },
+      this.connectionNameResolver,
+      this.spatialIndexStaticCache,
+    );
     const availableFinalizationIterations =
       this.getRemainingParentIterationsAfterCurrentStep();
     const cleanupIterationBudget =
@@ -1214,11 +1227,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         ...this.cleanupMutatedTraceIndices,
       ]),
     ];
-    const clearanceRepairSolver = new PowerTraceClearanceRepairSolver({
-      simpleRouteJson: this.inputProblem,
-      traces: this.traces,
-      traceIndices,
-    });
+    const clearanceRepairSolver = new PowerTraceClearanceRepairSolver(
+      {
+        simpleRouteJson: this.inputProblem,
+        traces: this.traces,
+        traceIndices,
+      },
+      this.connectionNameResolver,
+      this.spatialIndexStaticCache,
+    );
     clearanceRepairSolver.MAX_ITERATIONS = Math.min(
       clearanceRepairSolver.MAX_ITERATIONS,
       this.getRemainingParentIterationsAfterCurrentStep(),
@@ -1564,6 +1581,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         maxRerouteLength: 10,
       },
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
     this.phase = "try-trace-inflation";
     return true;
@@ -1684,6 +1702,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         maxRerouteLength: 10,
       },
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
     this.phase = "try-trace-inflation";
     return true;
@@ -2741,6 +2760,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.traceIndex,
       [],
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
   }
 

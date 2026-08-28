@@ -10,7 +10,10 @@ import {
   WIDTH_EPSILON,
 } from "./geometry";
 import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
-import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
+import {
+  SpatialObstacleIndex,
+  SpatialObstacleIndexStaticCache,
+} from "./SpatialObstacleIndex";
 import type {
   ElasticTracePushOutput,
   GridOffset,
@@ -67,6 +70,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
 
   private readonly blockerIndex: SpatialObstacleIndex;
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly spatialIndexStaticCache: SpatialObstacleIndexStaticCache;
   private readonly connectionByTraceId = new Map<
     string,
     SimpleRouteConnection | null
@@ -92,6 +96,10 @@ export class LocalTraceInflationSolver extends BaseSolver {
       inputProblem.simpleRouteJson,
       inputProblem.traces,
     ),
+    spatialIndexStaticCache = new SpatialObstacleIndexStaticCache(
+      inputProblem.simpleRouteJson,
+      connectionNameResolver,
+    ),
   ) {
     super();
     this.inputProblem = structuredClone(inputProblem);
@@ -101,12 +109,14 @@ export class LocalTraceInflationSolver extends BaseSolver {
       ? new Set(inputProblem.mutableTraceIndices)
       : null;
     this.connectionNameResolver = connectionNameResolver;
+    this.spatialIndexStaticCache = spatialIndexStaticCache;
     this.blockerIndex = new SpatialObstacleIndex(
       this.inputProblem.simpleRouteJson,
       this.traces,
       inputProblem.powerTraceIndex,
       [],
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
     this.activeSubSolver = null;
     this.MAX_ITERATIONS = 25_000;
@@ -249,6 +259,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
       this.currentBlocker.traceIndex,
       this.createInflatedCorridorItems(),
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
     this.activeSubSolver = new ElasticTracePushSolver({
       trace,

@@ -10,7 +10,10 @@ import {
   getPathLength,
 } from "./octilinear";
 import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
-import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
+import {
+  SpatialObstacleIndex,
+  SpatialObstacleIndexStaticCache,
+} from "./SpatialObstacleIndex";
 import type {
   InflationCorridorSegment,
   Point,
@@ -174,6 +177,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   connectivityRollbackMutationStats: Record<string, number> | null = null;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly spatialIndexStaticCache: SpatialObstacleIndexStaticCache;
   private readonly connectionByTraceId = new Map<
     string,
     SimpleRouteConnection | null
@@ -210,7 +214,17 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     | ObstacleAwareGridRouteSolver
     | null;
 
-  constructor(inputProblem: PowerTraceCleanupProblem) {
+  constructor(
+    inputProblem: PowerTraceCleanupProblem,
+    connectionNameResolver = new ConnectionNameResolver(
+      inputProblem.simpleRouteJson,
+      inputProblem.traces,
+    ),
+    spatialIndexStaticCache = new SpatialObstacleIndexStaticCache(
+      inputProblem.simpleRouteJson,
+      connectionNameResolver,
+    ),
+  ) {
     super();
     this.inputProblem = structuredClone(inputProblem);
     this.traces = structuredClone(inputProblem.traces);
@@ -219,10 +233,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.inputProblem.simpleRouteJson,
       this.initialConnectivitySafeTraces,
     );
-    this.connectionNameResolver = new ConnectionNameResolver(
-      inputProblem.simpleRouteJson,
-      this.traces,
-    );
+    this.connectionNameResolver = connectionNameResolver;
+    this.spatialIndexStaticCache = spatialIndexStaticCache;
     this.maxRerouteLength = inputProblem.maxRerouteLength ?? 10;
     this.desiredPadClearance = inputProblem.desiredPadClearance;
     this.clearancePaddingTiers = uniqueDescending([
@@ -746,6 +758,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         maxRerouteLength: this.maxRerouteLength,
       },
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
   }
 
@@ -1470,6 +1483,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         maxRerouteLength: this.maxRerouteLength,
       },
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
     this.phase = "shove-clearance";
   }
@@ -1936,6 +1950,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         : this.traceIndices?.[this.traceCursor],
       [],
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
   }
 
@@ -2264,6 +2279,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       undefined,
       [],
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
     this.remainingPadClearanceViolationCount =
       this.countPadClearanceViolations();
@@ -2403,6 +2419,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       undefined,
       [],
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
     this.remainingPadClearanceViolationCount =
       this.countPadClearanceViolations();
