@@ -3,7 +3,10 @@ import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import { WIDTH_EPSILON } from "./geometry";
 import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
-import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
+import {
+  SpatialObstacleIndex,
+  SpatialObstacleIndexStaticCache,
+} from "./SpatialObstacleIndex";
 import type {
   CollisionQuery,
   SimpleRouteJson,
@@ -48,6 +51,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   connectivityRollbackMutationStats: Record<string, number> | null = null;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly spatialIndexStaticCache: SpatialObstacleIndexStaticCache;
   private readonly nominalWidthByTraceId = new Map<string, number>();
   private readonly connectivityInvariant: PhysicalConnectivityInvariant;
   private readonly initialConnectivitySafeTraces: SimplifiedPcbTrace[];
@@ -55,7 +59,17 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   private readonly traceIndices: number[];
   private connectivityFinalized = false;
 
-  constructor(inputProblem: PowerTraceClearanceRepairProblem) {
+  constructor(
+    inputProblem: PowerTraceClearanceRepairProblem,
+    connectionNameResolver = new ConnectionNameResolver(
+      inputProblem.simpleRouteJson,
+      inputProblem.traces,
+    ),
+    spatialIndexStaticCache = new SpatialObstacleIndexStaticCache(
+      inputProblem.simpleRouteJson,
+      connectionNameResolver,
+    ),
+  ) {
     super();
     this.inputProblem = structuredClone(inputProblem);
     this.traces = structuredClone(inputProblem.traces);
@@ -64,10 +78,8 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       this.inputProblem.simpleRouteJson,
       this.initialConnectivitySafeTraces,
     );
-    this.connectionNameResolver = new ConnectionNameResolver(
-      inputProblem.simpleRouteJson,
-      this.traces,
-    );
+    this.connectionNameResolver = connectionNameResolver;
+    this.spatialIndexStaticCache = spatialIndexStaticCache;
     this.minimumTraceWidth = inputProblem.simpleRouteJson.minTraceWidth;
     const requestedIndices = inputProblem.traceIndices
       ? [...new Set(inputProblem.traceIndices)]
@@ -462,6 +474,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       undefined,
       [],
       this.connectionNameResolver,
+      this.spatialIndexStaticCache,
     );
   }
 

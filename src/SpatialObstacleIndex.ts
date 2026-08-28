@@ -22,6 +22,73 @@ type ConnectedPad = {
   canonicalConnectionNames: ReadonlySet<string>;
 };
 
+const createCanonicalConnectionNameSetGetter = (
+  connectionNameResolver: ConnectionNameResolver,
+) => {
+  const setsByInput = new WeakMap<string[], ReadonlySet<string>>();
+  return (connectionNames: string[]) => {
+    const cached = setsByInput.get(connectionNames);
+    if (cached) return cached;
+    const canonicalNames = new Set(
+      connectionNameResolver.canonicalize(connectionNames),
+    );
+    setsByInput.set(connectionNames, canonicalNames);
+    return canonicalNames;
+  };
+};
+
+/**
+ * Immutable board-obstacle metadata shared by the short-lived spatial indexes
+ * created while one routing problem is being refined.
+ */
+export class SpatialObstacleIndexStaticCache {
+  readonly obstacleItems: IndexedObstacle[];
+  readonly obstacleConnectionNameSets: ReadonlySet<string>[];
+  readonly obstacleCopperObjectIds: string[];
+  readonly connectedPads: ConnectedPad[];
+
+  constructor(
+    simpleRouteJson: SimpleRouteJson,
+    connectionNameResolver: ConnectionNameResolver,
+  ) {
+    this.obstacleItems = simpleRouteJson.obstacles.flatMap(
+      (obstacle, obstacleIndex) =>
+        approximateObstacleWithRects(obstacle).map((item) => ({
+          ...item,
+          copperObjectId: `obstacle:${obstacleIndex}`,
+        })),
+    );
+    const getCanonicalConnectionNameSet =
+      createCanonicalConnectionNameSetGetter(connectionNameResolver);
+    this.obstacleConnectionNameSets = this.obstacleItems.map((item) =>
+      getCanonicalConnectionNameSet(item.connectionNames),
+    );
+    this.obstacleCopperObjectIds = this.obstacleItems.map(
+      (item, itemIndex) =>
+        item.copperObjectId ?? `indexed-item:${itemIndex}`,
+    );
+    this.connectedPads = simpleRouteJson.obstacles.flatMap((obstacle) => {
+      if (
+        !obstacle.connectedTo.some(
+          (name) =>
+            name.startsWith("pcb_smtpad_") ||
+            name.startsWith("pcb_plated_hole_"),
+        )
+      ) {
+        return [];
+      }
+      return [
+        {
+          obstacle,
+          canonicalConnectionNames: getCanonicalConnectionNameSet(
+            obstacle.connectedTo,
+          ),
+        },
+      ];
+    });
+  }
+}
+
 const getBoardLayers = (layerCount: number) => [
   "top",
   ...Array.from(
@@ -56,6 +123,10 @@ export class SpatialObstacleIndex {
       simpleRouteJson,
       traces,
     ),
+    staticCache = new SpatialObstacleIndexStaticCache(
+      simpleRouteJson,
+      connectionNameResolver,
+    ),
   ) {
     this.bounds = simpleRouteJson.bounds;
     this.boardLayers = getBoardLayers(simpleRouteJson.layerCount);
@@ -75,17 +146,12 @@ export class SpatialObstacleIndex {
       simpleRouteJson.min_via_hole_diameter ??
       simpleRouteJson.minViaHoleDiameter ??
       0.3;
-    this.items = [
-      ...simpleRouteJson.obstacles.flatMap((obstacle, obstacleIndex) =>
-        approximateObstacleWithRects(obstacle).map((item) => ({
-          ...item,
-          copperObjectId: `obstacle:${obstacleIndex}`,
-        })),
-      ),
+    const dynamicItems = [
       ...this.createTraceItems(simpleRouteJson.fixedTraces ?? [], true),
       ...this.createTraceItems(traces),
       ...extraItems,
     ];
+    this.items = [...staticCache.obstacleItems, ...dynamicItems];
     this.maxIndexedViaHoleDiameter = this.items.reduce(
       (maximum, item) =>
         item.kind === "via"
@@ -97,32 +163,23 @@ export class SpatialObstacleIndex {
       this.defaultViaHoleDiameter,
     );
     this.connectionNameResolver = connectionNameResolver;
-    this.connectionNameSets = this.items.map(
-      (item) =>
-        new Set(connectionNameResolver.canonicalize(item.connectionNames)),
-    );
-    this.copperObjectIds = this.items.map(
-      (item, itemIndex) => item.copperObjectId ?? `indexed-item:${itemIndex}`,
-    );
-    this.connectedPads = simpleRouteJson.obstacles.flatMap((obstacle) => {
-      if (
-        !obstacle.connectedTo.some(
-          (name) =>
-            name.startsWith("pcb_smtpad_") ||
-            name.startsWith("pcb_plated_hole_"),
-        )
-      ) {
-        return [];
-      }
-      return [
-        {
-          obstacle,
-          canonicalConnectionNames: new Set(
-            connectionNameResolver.canonicalize(obstacle.connectedTo),
-          ),
-        },
-      ];
-    });
+    const getCanonicalConnectionNameSet =
+      createCanonicalConnectionNameSetGetter(connectionNameResolver);
+    this.connectionNameSets = [
+      ...staticCache.obstacleConnectionNameSets,
+      ...dynamicItems.map((item) =>
+        getCanonicalConnectionNameSet(item.connectionNames),
+      ),
+    ];
+    this.copperObjectIds = [
+      ...staticCache.obstacleCopperObjectIds,
+      ...dynamicItems.map(
+        (item, itemIndex) =>
+          item.copperObjectId ??
+          `indexed-item:${staticCache.obstacleItems.length + itemIndex}`,
+      ),
+    ];
+    this.connectedPads = staticCache.connectedPads;
     this.index = this.items.length > 0 ? new Flatbush(this.items.length) : null;
     for (const item of this.items) {
       this.index!.add(item.minX, item.minY, item.maxX, item.maxY);

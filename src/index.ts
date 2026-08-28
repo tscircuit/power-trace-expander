@@ -13,7 +13,10 @@ export {
   PowerTraceClearanceRepairSolver,
   type PowerTraceClearanceRepairProblem,
 } from "./PowerTraceClearanceRepairSolver";
-export { SpatialObstacleIndex } from "./SpatialObstacleIndex";
+export {
+  SpatialObstacleIndex,
+  SpatialObstacleIndexStaticCache,
+} from "./SpatialObstacleIndex";
 export { ConnectionNameResolver } from "./ConnectionNameResolver";
 export {
   measureTraceWidths,
