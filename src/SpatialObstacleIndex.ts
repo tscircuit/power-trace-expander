@@ -15,6 +15,7 @@ import type {
   SimpleRouteJson,
   SimplifiedPcbTrace,
   ViaCollisionQuery,
+  ViaRoutePoint,
 } from "./types";
 
 type ConnectedPad = {
@@ -123,6 +124,21 @@ export class SpatialObstacleIndex {
     this.index?.finish();
   }
 
+  private getViaLayers(via: ViaRoutePoint): string[] {
+    if (via.layers !== undefined) return via.layers;
+    const fromIndex = this.boardLayers.indexOf(via.from_layer);
+    const toIndex = this.boardLayers.indexOf(via.to_layer);
+    if (fromIndex < 0 || toIndex < 0) {
+      throw new Error(
+        `Via endpoints ${via.from_layer} and ${via.to_layer} must be board layers`,
+      );
+    }
+    return this.boardLayers.slice(
+      Math.min(fromIndex, toIndex),
+      Math.max(fromIndex, toIndex) + 1,
+    );
+  }
+
   private createTraceItems(
     traces: SimplifiedPcbTrace[],
     fixed = false,
@@ -149,10 +165,7 @@ export class SpatialObstacleIndex {
             minY: point.y - diameter / 2,
             maxX: point.x + diameter / 2,
             maxY: point.y + diameter / 2,
-            // Core emits a through via on every copper layer between the
-            // requested endpoints. Treating it as board-wide is conservative
-            // for the common two-layer case and correct for multilayer boards.
-            layers: this.boardLayers,
+            layers: this.getViaLayers(point),
             kind: "via",
             connectionNames,
             traceIndex: indexedTraceIndex,

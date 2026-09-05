@@ -14,6 +14,7 @@ export type ViaRoutePoint = {
   y: number;
   to_layer: string;
   from_layer: string;
+  layers?: string[];
   via_diameter?: number;
   via_hole_diameter?: number;
 };
