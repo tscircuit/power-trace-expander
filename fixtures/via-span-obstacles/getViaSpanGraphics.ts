@@ -4,13 +4,13 @@ import type {
   PowerTraceExpanderInput,
   SimplifiedPcbTrace,
 } from "../../src/types";
-import type { ViaSpanApi } from "./createViaSpanProblem";
+import type { ViaSpanCase } from "./createViaSpanProblem";
 
 /** Shows the actual obstacle index, not the via's intended physical span. */
 export const getViaSpanGraphics = (
   input: PowerTraceExpanderInput,
   output: SimplifiedPcbTrace[],
-  api: ViaSpanApi,
+  spanCase: ViaSpanCase,
 ): GraphicsObject => {
   const index = new SpatialObstacleIndex(input, []);
   const layers = index.boardLayers;
@@ -22,9 +22,9 @@ export const getViaSpanGraphics = (
       x: 0,
       y: 2.5,
       text:
-        api === "endpoints"
+        spanCase === "endpoints"
           ? "Declared via span: top to inner2 (excludes bottom)"
-          : "Explicit via layers: [bottom] (overrides top to inner2)",
+          : "Declared via span: inner2 to top (excludes bottom)",
       fontSize: 0.17,
     },
     {
@@ -117,9 +117,9 @@ export const getViaSpanGraphics = (
   }
   return {
     title:
-      api === "endpoints"
+      spanCase === "endpoints"
         ? "Via: top to inner2 | Power: bottom"
-        : "Via layers: [bottom], endpoints: top to inner2 | Power: inner1",
+        : "Via: inner2 to top | Power: bottom",
     coordinateSystem: "cartesian",
     lines,
     circles,

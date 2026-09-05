@@ -1,20 +1,19 @@
 import type { PowerTraceExpanderInput, ViaRoutePoint } from "../../src/types";
 
-export type ViaSpanApi = "endpoints" | "layers";
+export type ViaSpanCase = "endpoints" | "reversed";
 
 export const createViaSpanProblem = (
-  api: ViaSpanApi,
+  spanCase: ViaSpanCase,
 ): PowerTraceExpanderInput => {
-  const layer = api === "endpoints" ? "bottom" : "inner1";
-  const via: ViaRoutePoint & { layers?: string[] } = {
+  const layer = "bottom";
+  const via: ViaRoutePoint = {
     route_type: "via",
     x: 0,
     y: 0,
-    from_layer: "top",
-    to_layer: "inner2",
+    from_layer: spanCase === "endpoints" ? "top" : "inner2",
+    to_layer: spanCase === "endpoints" ? "inner2" : "top",
     via_diameter: 0.3,
     via_hole_diameter: 0.1,
-    ...(api === "layers" ? { layers: ["bottom"] } : {}),
   };
   return {
     layerCount: 4,

@@ -4,8 +4,8 @@ import { PowerTraceExpanderSolver, SpatialObstacleIndex } from "../src";
 import { createViaSpanProblem } from "../fixtures/via-span-obstacles/createViaSpanProblem";
 import { getViaSpanGraphics } from "../fixtures/via-span-obstacles/getViaSpanGraphics";
 
-test("reproduces the false via obstacle for layers", async (): Promise<void> => {
-  const input = createViaSpanProblem("layers");
+test("reproduces the false via obstacle for reversed endpoints", async (): Promise<void> => {
+  const input = createViaSpanProblem("reversed");
   const before = structuredClone(input);
   const solver = new PowerTraceExpanderSolver(input, { allowNewVias: false });
   solver.solve();
@@ -24,7 +24,7 @@ test("reproduces the false via obstacle for layers", async (): Promise<void> => 
     ),
   ).toBe(true);
   expect(input).toEqual(before);
-  await expect(getViaSpanGraphics(input, output, "layers")).toMatchGraphicsSvg(
+  await expect(getViaSpanGraphics(input, output, "reversed")).toMatchGraphicsSvg(
     import.meta.path,
   );
 });
