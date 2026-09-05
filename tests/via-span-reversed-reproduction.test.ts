@@ -4,7 +4,7 @@ import { PowerTraceExpanderSolver, SpatialObstacleIndex } from "../src";
 import { createViaSpanProblem } from "../fixtures/via-span-obstacles/createViaSpanProblem";
 import { getViaSpanGraphics } from "../fixtures/via-span-obstacles/getViaSpanGraphics";
 
-test("reproduces the false via obstacle for reversed endpoints", async (): Promise<void> => {
+test("keeps power straight outside the via span for reversed endpoints", async (): Promise<void> => {
   const input = createViaSpanProblem("reversed");
   const before = structuredClone(input);
   const solver = new PowerTraceExpanderSolver(input, { allowNewVias: false });
@@ -14,17 +14,24 @@ test("reproduces the false via obstacle for reversed endpoints", async (): Promi
   const traceLayer = input.connections[0]!.pointsToConnect[0]!.layer;
 
   expect(solver.solved).toBe(true);
-  // Capture the current bug: an unrelated layer blocks expansion.
-  expect(index.items.find((item) => item.kind === "via")!.layers).toContain(
-    traceLayer,
-  );
+  expect(index.items.find((item) => item.kind === "via")!.layers).toEqual([
+    "top",
+    "inner1",
+    "inner2",
+  ]);
+  expect(output[0]!.route[0]).toMatchObject({ x: -2, y: 0.5 });
+  expect(output[0]!.route.at(-1)).toMatchObject({ x: 2, y: 0.5 });
   expect(
-    output[0]!.route.some(
-      (point) => point.route_type === "wire" && point.y > 0.5 + 1e-6,
+    output[0]!.route.every(
+      (point) =>
+        point.route_type === "wire" &&
+        point.layer === traceLayer &&
+        point.y === 0.5 &&
+        point.width === 0.8,
     ),
   ).toBe(true);
   expect(input).toEqual(before);
-  await expect(getViaSpanGraphics(input, output, "reversed")).toMatchGraphicsSvg(
-    import.meta.path,
-  );
+  await expect(
+    getViaSpanGraphics(input, output, "reversed"),
+  ).toMatchGraphicsSvg(import.meta.path);
 });
