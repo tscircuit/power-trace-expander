@@ -1,20 +1,22 @@
 import { InteractiveGraphics } from "graphics-debug/react";
 import { useMemo, type ReactElement } from "react";
 import { PowerTraceExpanderSolver } from "../../src";
-import { createViaSpanProblem, type ViaSpanApi } from "./createViaSpanProblem";
+import { createViaSpanProblem, type ViaSpanCase } from "./createViaSpanProblem";
 import { getViaSpanGraphics } from "./getViaSpanGraphics";
 
-function ViaSpanObstacleFixture({ api }: { api: ViaSpanApi }): ReactElement {
+function ViaSpanObstacleFixture({
+  spanCase,
+}: { spanCase: ViaSpanCase }): ReactElement {
   const graphics = useMemo(() => {
-    const input = createViaSpanProblem(api);
+    const input = createViaSpanProblem(spanCase);
     const solver = new PowerTraceExpanderSolver(input, { allowNewVias: false });
     solver.solve();
-    return getViaSpanGraphics(input, solver.getOutput(), api);
-  }, [api]);
+    return getViaSpanGraphics(input, solver.getOutput(), spanCase);
+  }, [spanCase]);
   return <InteractiveGraphics graphics={graphics} />;
 }
 
 export default {
-  "Endpoint span": <ViaSpanObstacleFixture api="endpoints" />,
-  "Explicit layers": <ViaSpanObstacleFixture api="layers" />,
+  "Endpoint span": <ViaSpanObstacleFixture spanCase="endpoints" />,
+  "Reversed endpoints": <ViaSpanObstacleFixture spanCase="reversed" />,
 };

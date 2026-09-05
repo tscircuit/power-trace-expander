@@ -4,8 +4,8 @@ import { PowerTraceExpanderSolver, SpatialObstacleIndex } from "../src";
 import { createViaSpanProblem } from "../fixtures/via-span-obstacles/createViaSpanProblem";
 import { getViaSpanGraphics } from "../fixtures/via-span-obstacles/getViaSpanGraphics";
 
-test("keeps power straight outside the via span for layers", async (): Promise<void> => {
-  const input = createViaSpanProblem("layers");
+test("keeps power straight outside the via span for reversed endpoints", async (): Promise<void> => {
+  const input = createViaSpanProblem("reversed");
   const before = structuredClone(input);
   const solver = new PowerTraceExpanderSolver(input, { allowNewVias: false });
   solver.solve();
@@ -15,7 +15,9 @@ test("keeps power straight outside the via span for layers", async (): Promise<v
 
   expect(solver.solved).toBe(true);
   expect(index.items.find((item) => item.kind === "via")!.layers).toEqual([
-    "bottom",
+    "top",
+    "inner1",
+    "inner2",
   ]);
   expect(output[0]!.route[0]).toMatchObject({ x: -2, y: 0.5 });
   expect(output[0]!.route.at(-1)).toMatchObject({ x: 2, y: 0.5 });
@@ -29,7 +31,7 @@ test("keeps power straight outside the via span for layers", async (): Promise<v
     ),
   ).toBe(true);
   expect(input).toEqual(before);
-  await expect(getViaSpanGraphics(input, output, "layers")).toMatchGraphicsSvg(
-    import.meta.path,
-  );
+  await expect(
+    getViaSpanGraphics(input, output, "reversed"),
+  ).toMatchGraphicsSvg(import.meta.path);
 });

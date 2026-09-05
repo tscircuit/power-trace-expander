@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { SpatialObstacleIndex } from "../src";
 import type { PowerTraceExpanderInput, ViaRoutePoint } from "../src/types";
 
-test("via obstacles occupy their declared layers or inclusive endpoint span", () => {
+test("via obstacles occupy their inclusive endpoint span", () => {
   const via: ViaRoutePoint = {
     route_type: "via",
     x: 0,
@@ -40,9 +40,10 @@ test("via obstacles occupy their declared layers or inclusive endpoint span", ()
   expect(collidesOnLayer("inner1")).toBe(true);
   expect(collidesOnLayer("bottom")).toBe(false);
 
-  via.layers = ["bottom"];
+  via.from_layer = "bottom";
+  via.to_layer = "bottom";
   expect(collidesOnLayer("bottom")).toBe(true);
   expect(collidesOnLayer("inner1")).toBe(false);
-  expect(via.from_layer).toBe("inner2");
-  expect(via.to_layer).toBe("top");
+  expect(via.from_layer).toBe("bottom");
+  expect(via.to_layer).toBe("bottom");
 });

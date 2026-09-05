@@ -125,7 +125,6 @@ export class SpatialObstacleIndex {
   }
 
   private getViaLayers(via: ViaRoutePoint): string[] {
-    if (via.layers !== undefined) return via.layers;
     const fromIndex = this.boardLayers.indexOf(via.from_layer);
     const toIndex = this.boardLayers.indexOf(via.to_layer);
     if (fromIndex < 0 || toIndex < 0) {
