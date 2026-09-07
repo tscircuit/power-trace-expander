@@ -46,8 +46,8 @@ const problem = {
       pcb_trace_id: "motor-b2",
       connection_name: "MOTOR_B2",
       route: [
-        wire(11.360820734793128, -2.365910377208615, 0.175),
-        wire(11.360820734793128, -2.8141792652068713, 0.65),
+        wire(11.360820734793128, -2.365910377208615, 0.65),
+        wire(11.360820734793128, -2.8141792652068713, 0.175),
       ],
     },
     {
@@ -66,24 +66,7 @@ const getForeignTraceCollisionCount = (
   simpleRouteJson: SimpleRouteJson,
   traces: SimplifiedPcbTrace[],
 ) => {
-  const conservativeTraces = structuredClone(traces);
-  for (const trace of conservativeTraces) {
-    for (let index = 0; index < trace.route.length - 1; index++) {
-      const start = trace.route[index];
-      const end = trace.route[index + 1];
-      if (
-        start?.route_type === "wire" &&
-        end?.route_type === "wire" &&
-        start.layer === end.layer
-      ) {
-        start.width = Math.max(start.width, end.width);
-      }
-    }
-  }
-  const obstacleIndex = new SpatialObstacleIndex(
-    simpleRouteJson,
-    conservativeTraces,
-  );
+  const obstacleIndex = new SpatialObstacleIndex(simpleRouteJson, traces);
   let collisionCount = 0;
   for (let traceIndex = 0; traceIndex < traces.length; traceIndex++) {
     const trace = traces[traceIndex]!;
@@ -105,7 +88,7 @@ const getForeignTraceCollisionCount = (
         start,
         end,
         layer: start.layer,
-        width: Math.max(start.width, end.width),
+        width: start.width,
         connectionNames: [trace.pcb_trace_id, trace.connection_name].filter(
           (name): name is string => Boolean(name),
         ),
@@ -132,7 +115,7 @@ const getRouteGeometry = (traces: SimplifiedPcbTrace[]) =>
     ),
   );
 
-test("necks an endpoint-width transition that would collide after route reversal", async () => {
+test("necks the colliding physical segment without changing the following width", async () => {
   const input = structuredClone(problem);
   expect(getForeignTraceCollisionCount(input, input.traces)).toBeGreaterThan(0);
   const beforeGeometry = getRouteGeometry(input.traces);
@@ -150,12 +133,13 @@ test("necks an endpoint-width transition that would collide after route reversal
   expect(solver.stats.unresolvedSegmentCount).toBe(0);
   expect(getForeignTraceCollisionCount(input, output)).toBe(0);
   expect(getRouteGeometry(output)).toEqual(beforeGeometry);
-  expect(output[0]!.route[1]!.route_type).toBe("wire");
+  expect(output[0]!.route[0]!.route_type).toBe("wire");
   expect(
-    output[0]!.route[1]!.route_type === "wire"
-      ? output[0]!.route[1]!.width
+    output[0]!.route[0]!.route_type === "wire"
+      ? output[0]!.route[0]!.width
       : undefined,
   ).toBeLessThan(0.65);
+  expect(output[0]!.route[1]).toEqual(input.traces[0]!.route[1]);
   await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path, {
     svgName: "direction-independent-trace-clearance",
   });
@@ -168,14 +152,14 @@ test("keeps committed clearance repairs when its iteration budget is reached", (
     traces: input.traces,
   });
   const originalWidth =
-    input.traces[0]!.route[1]!.route_type === "wire"
-      ? input.traces[0]!.route[1]!.width
+    input.traces[0]!.route[0]!.route_type === "wire"
+      ? input.traces[0]!.route[0]!.width
       : 0;
   solver.MAX_ITERATIONS = 1;
 
   solver.solve();
 
-  const repairedPoint = solver.getOutput()[0]!.route[1]!;
+  const repairedPoint = solver.getOutput()[0]!.route[0]!;
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
   expect(solver.budgetLimited).toBe(true);
@@ -184,4 +168,19 @@ test("keeps committed clearance repairs when its iteration budget is reached", (
   expect(
     repairedPoint.route_type === "wire" ? repairedPoint.width : originalWidth,
   ).toBeLessThan(originalWidth);
+});
+
+test("does not narrow a safe segment because its unused terminal width is larger", () => {
+  const input = structuredClone(problem);
+  input.traces[0]!.route[0]!.width = 0.175;
+  input.traces[0]!.route[1]!.width = 0.65;
+  expect(getForeignTraceCollisionCount(input, input.traces)).toBe(0);
+  const solver = new PowerTraceClearanceRepairSolver({
+    simpleRouteJson: input,
+    traces: input.traces,
+  });
+  solver.solve();
+  expect(solver.solved).toBe(true);
+  expect(solver.stats.repairedSegmentCount).toBe(0);
+  expect(solver.getOutput()).toEqual(input.traces);
 });

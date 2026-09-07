@@ -266,17 +266,69 @@ export class SpatialObstacleIndex {
     const padsAtPoint = this.getConnectedPadsAtPoint(query, point);
     if (padsAtPoint.length === 0) return null;
     return Math.max(
-      ...padsAtPoint.map(({ obstacle }) => {
-        const localPoint = this.getObstacleLocalPoint(point, obstacle);
-        return Math.max(
-          0,
-          2 *
-            Math.min(
-              obstacle.width / 2 - Math.abs(localPoint.x),
-              obstacle.height / 2 - Math.abs(localPoint.y),
-            ),
-        );
-      }),
+      ...padsAtPoint.map(({ obstacle }) =>
+        this.getPadEndpointWidthLimit(point, obstacle),
+      ),
+    );
+  }
+
+  getConnectedPadNeck(
+    query: CollisionQuery,
+    endpoint: "start" | "end",
+    isTraceEndpoint = false,
+  ): { widthLimit: number; boundary: { x: number; y: number } | null } | null {
+    const inside = endpoint === "start" ? query.start : query.end;
+    const outside = endpoint === "start" ? query.end : query.start;
+    const pads = this.getConnectedPadsAtPoint(query, inside).flatMap(
+      ({ obstacle }) => {
+        const boundary = this.pointIsInsideObstacle(outside, obstacle)
+          ? null
+          : this.getObstacleBoundaryPoint(inside, outside, obstacle);
+        // An exact exit from one pad can still lie inside another pad. Exclude
+        // only the pad with no remaining span, then select its replacement.
+        if (
+          boundary &&
+          Math.hypot(boundary.x - inside.x, boundary.y - inside.y) <= 1e-9
+        ) {
+          return [];
+        }
+        return [
+          {
+            obstacle,
+            boundary,
+            width: this.getPadWidthNormalToQuery(obstacle, query),
+          },
+        ];
+      },
+    );
+    if (pads.length === 0) return null;
+    pads.sort((a, b) => b.width - a.width);
+    let widthLimit = pads[0]!.width;
+    if (isTraceEndpoint) {
+      widthLimit = Math.min(
+        widthLimit,
+        Math.max(
+          ...pads.map(({ obstacle }) =>
+            this.getPadEndpointWidthLimit(inside, obstacle),
+          ),
+        ),
+      );
+    }
+    return { widthLimit, boundary: pads[0]!.boundary };
+  }
+
+  private getPadEndpointWidthLimit(
+    point: { x: number; y: number },
+    obstacle: Obstacle,
+  ) {
+    const localPoint = this.getObstacleLocalPoint(point, obstacle);
+    return Math.max(
+      0,
+      2 *
+        Math.min(
+          obstacle.width / 2 - Math.abs(localPoint.x),
+          obstacle.height / 2 - Math.abs(localPoint.y),
+        ),
     );
   }
 
@@ -375,6 +427,17 @@ export class SpatialObstacleIndex {
       return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
     };
     const localInside = toLocal(inside);
+    // Containment accepts coordinates up to 1e-9 beyond an edge. Rotating an
+    // exact boundary can produce such a coordinate, so clamp this known-inside
+    // point before intersecting; an outward segment then has a zero exit time.
+    localInside.x = Math.max(
+      -obstacle.width / 2,
+      Math.min(obstacle.width / 2, localInside.x),
+    );
+    localInside.y = Math.max(
+      -obstacle.height / 2,
+      Math.min(obstacle.height / 2, localInside.y),
+    );
     const localOutside = toLocal(outside);
     const delta = {
       x: localOutside.x - localInside.x,
