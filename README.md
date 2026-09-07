@@ -5,6 +5,14 @@ widths while preserving collision clearances.
 
 [Open the step-through solver debugger](https://power-trace-expander.vercel.app)
 
+Consuming the output requires `@tscircuit/core >=0.0.1737`, which preserves
+segment-start widths when reversing a route. Each wire point owns the width of
+the segment to the next wire point on that layer. The final clearance repair
+uses a single point at each connected-pad width boundary and introduces no
+positive segment shorter than 0.001 mm. If a proposed split would create such
+a segment, the narrower width covers that span instead; existing short route
+segments are preserved.
+
 The solver keeps already-conforming traces byte-for-byte. For an under-width
 trace it evaluates short route intervals, widens clear geometry in place, and
 uses a granular high-density grid solver to bypass blocked intervals. Candidate

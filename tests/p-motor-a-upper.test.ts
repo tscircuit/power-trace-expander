@@ -14,7 +14,7 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
     (trace) => trace.connection_name === UPPER_P_MOTOR_A_CONNECTION,
   )!;
   const before = getTraceWidthMetrics(problem, [originalTargetTrace], {
-    segmentWidthSemantics: "endpoint-minimum",
+    segmentWidthSemantics: "circuit-json",
   }).get(1)!;
   const solver = new PowerTraceExpanderSolver(problem, {
     onlyConnectionNames: [UPPER_P_MOTOR_A_CONNECTION],
@@ -30,7 +30,7 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
   );
   const targetTrace = output[targetTraceIndex]!;
   const after = getTraceWidthMetrics(problem, [targetTrace], {
-    segmentWidthSemantics: "endpoint-minimum",
+    segmentWidthSemantics: "circuit-json",
   }).get(1)!;
   let bottomLength = 0;
   for (let index = 0; index < targetTrace.route.length - 1; index++) {
@@ -66,7 +66,6 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
   expect(solver.layerReroutedTraceCount).toBe(1);
   expect(solver.attemptedLayerGridCount).toBeLessThanOrEqual(2);
   expect(solver.pushedTraceCount).toBeGreaterThanOrEqual(1);
-  expect(runtimeMs).toBeLessThan(2_000);
 
   const validationTraces = output.map((trace, traceIndex) =>
     traceIndex === targetTraceIndex ? { ...trace, route: [] } : trace,
@@ -105,7 +104,7 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
           start: routePoint,
           end: routeEnd,
           layer: routePoint.layer,
-          width: Math.max(routePoint.width, routeEnd.width),
+          width: routePoint.width,
           connectionNames,
         }),
       ).toBe(false);
@@ -113,4 +112,5 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
   }
 
   await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path);
+  expect(runtimeMs).toBeLessThan(2_000);
 });

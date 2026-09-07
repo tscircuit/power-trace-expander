@@ -86,13 +86,19 @@ test("does not widen a power escape beyond its connected pad", () => {
     .route.filter((point) => point.route_type === "wire");
   expect(solver.solved).toBe(true);
   expect(
-    wires
-      .filter((point) => point.x <= 0.55 + 1e-9)
-      .every((point) => point.width <= 0.3 + 1e-9),
+    wires.every((start, index) => {
+      const end = wires[index + 1];
+      if (!end || start.layer !== end.layer) return true;
+      const midpointX = (start.x + end.x) / 2;
+      return midpointX > 0.55 + 1e-9 || start.width <= 0.3 + 1e-9;
+    }),
   ).toBe(true);
   expect(
-    wires.some(
-      (point) => point.x > 0.55 && point.x < 2.7 && point.width >= 0.5,
-    ),
+    wires.some((start, index) => {
+      const end = wires[index + 1];
+      if (!end || start.layer !== end.layer) return false;
+      const midpointX = (start.x + end.x) / 2;
+      return midpointX > 0.55 && midpointX < 2.7 && start.width >= 0.5;
+    }),
   ).toBe(true);
 });

@@ -21,13 +21,14 @@ const isWire = (
   point: SimplifiedPcbTrace["route"][number] | undefined,
 ): point is WireRoutePoint => point?.route_type === "wire";
 
+const MIN_INSERTED_SEGMENT_LENGTH = 0.001;
+
 /**
- * Direction-independent final copper-clearance guard.
+ * Final copper-clearance guard using segment-start widths.
  *
- * Core can reverse a solver route while associating it with a source trace,
- * which changes which endpoint width is serialized onto a segment. This pass
- * therefore validates every segment at the larger of its endpoint widths and
- * necks only the colliding transition. It never changes route geometry.
+ * A wire point owns the width of the segment to the next point. Core preserves
+ * this association when reversing routes, so each pad crossing needs only one
+ * boundary point and clearance repairs need only narrow the colliding segment.
  */
 export class PowerTraceClearanceRepairSolver extends BaseSolver {
   readonly inputProblem: PowerTraceClearanceRepairProblem;
@@ -60,14 +61,14 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     this.traceIndices = this.traces.flatMap((_, traceIndex) =>
       !requestedIndices || requestedIndices.has(traceIndex) ? [traceIndex] : [],
     );
-    this.obstacleIndex = this.createConservativeObstacleIndex();
+    this.obstacleIndex = this.createObstacleIndex();
     const initialSegmentCount = this.traceIndices.reduce(
       (count, traceIndex) =>
         count + Math.max(0, this.traces[traceIndex]!.route.length - 1),
       0,
     );
-    // A pad-boundary repair inserts two points and rewinds one segment. Leave
-    // enough headroom to visit those new segments and both trace terminals.
+    // A segment joining two pads can gain two boundary points. Leave enough
+    // headroom to recheck the split segments and both trace terminals.
     this.MAX_ITERATIONS = Math.max(
       10,
       initialSegmentCount * 8 + this.traceIndices.length * 2,
@@ -103,7 +104,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       return;
     }
 
-    const currentWidth = Math.max(start.width, end.width);
+    const currentWidth = start.width;
     const padQuery: CollisionQuery = {
       start,
       end,
@@ -152,11 +153,8 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       : quantizedSafeWidth;
 
     const previousStartWidth = start.width;
-    const previousEndWidth = end.width;
     start.width = Math.min(start.width, repairedWidth);
-    end.width = Math.min(end.width, repairedWidth);
-    const reduction =
-      previousStartWidth - start.width + (previousEndWidth - end.width);
+    const reduction = previousStartWidth - start.width;
     if (reduction <= WIDTH_EPSILON) {
       this.unresolvedSegmentCount++;
       this.stats = this.createStats();
@@ -165,10 +163,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
 
     this.repairedSegmentCount++;
     this.totalWidthReduction += reduction;
-    this.obstacleIndex = this.createConservativeObstacleIndex();
-    // Recheck the segment before this one because the shared endpoint width
-    // participates in both directions after core serializes the final route.
-    this.routeCursor = Math.max(0, routeIndex - 1);
+    this.obstacleIndex = this.createObstacleIndex();
     this.stats = this.createStats();
   }
 
@@ -180,180 +175,146 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     const start = trace.route[routeIndex];
     const end = trace.route[routeIndex + 1];
     if (!isWire(start) || !isWire(end)) return false;
-    let startLimit = this.obstacleIndex.getConnectedPadWidthLimitAtPoint(
+    const startNeck = this.obstacleIndex.getConnectedPadNeck(
       query,
-      start,
+      "start",
+      routeIndex === 0,
     );
-    let endLimit = this.obstacleIndex.getConnectedPadWidthLimitAtPoint(
+    const endNeck = this.obstacleIndex.getConnectedPadNeck(
       query,
-      end,
+      "end",
+      routeIndex + 1 === trace.route.length - 1,
     );
-    if (routeIndex === 0) {
-      startLimit = this.getSmallerLimit(
-        startLimit,
-        this.obstacleIndex.getConnectedPadEndpointWidthLimitAtPoint(
-          query,
-          start,
-        ),
-      );
+    const startLimit = startNeck?.widthLimit ?? null;
+    const endLimit = endNeck?.widthLimit ?? null;
+    if (startLimit === null && endLimit === null) return false;
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    const distanceFromStart = (point: { x: number; y: number }) =>
+      Math.hypot(point.x - start.x, point.y - start.y);
+    const startBoundary = startNeck?.boundary ?? null;
+    const endBoundary = endNeck?.boundary ?? null;
+    const startExit = startBoundary ? distanceFromStart(startBoundary) : length;
+    const endEntry = endBoundary ? distanceFromStart(endBoundary) : 0;
+
+    const originalWidth = start.width;
+    let outsideWidth = originalWidth;
+    const viaBoundary =
+      startLimit !== null &&
+      endLimit === null &&
+      trace.route[routeIndex + 2]?.route_type === "via"
+        ? startBoundary
+        : endLimit !== null &&
+            startLimit === null &&
+            trace.route[routeIndex - 1]?.route_type === "via"
+          ? endBoundary
+          : null;
+    if (viaBoundary) {
+      const nominalWidth = this.resolveNominalTraceWidth(trace);
+      // Only the outside span is restored. Its owner is the boundary when
+      // leaving a pad, and the original start point when entering a pad.
+      if (
+        nominalWidth > outsideWidth + WIDTH_EPSILON &&
+        !this.obstacleIndex.collides({
+          ...query,
+          start: startLimit !== null ? viaBoundary : start,
+          end: startLimit !== null ? end : viaBoundary,
+          width: nominalWidth,
+        })
+      ) {
+        outsideWidth = nominalWidth;
+      }
     }
-    if (routeIndex + 1 === trace.route.length - 1) {
-      endLimit = this.getSmallerLimit(
-        endLimit,
-        this.obstacleIndex.getConnectedPadEndpointWidthLimitAtPoint(query, end),
+
+    const boundaries = [
+      ...(startLimit !== null && startBoundary ? [startBoundary] : []),
+      ...(endLimit !== null && endBoundary ? [endBoundary] : []),
+    ].sort((a, b) => distanceFromStart(a) - distanceFromStart(b));
+    const points = [start, ...boundaries, end];
+    const spans = points.slice(0, -1).map((point, index) => {
+      const next = points[index + 1]!;
+      const middle = (distanceFromStart(point) + distanceFromStart(next)) / 2;
+      let width = outsideWidth;
+      // Pads may be narrower than the global minimum trace width. Preserve
+      // their physical neck limits, including when both pads share a segment.
+      if (startLimit !== null && middle <= startExit) {
+        width = Math.min(width, originalWidth, startLimit);
+      }
+      if (endLimit !== null && middle >= endEntry) {
+        width = Math.min(width, originalWidth, endLimit);
+      }
+      return { start: point, end: next, width };
+    });
+
+    const coalesceEqualWidthSpans = () => {
+      for (let index = 1; index < spans.length; ) {
+        const previous = spans[index - 1]!;
+        const current = spans[index]!;
+        if (Math.abs(previous.width - current.width) <= WIDTH_EPSILON) {
+          previous.end = current.end;
+          previous.width = Math.min(previous.width, current.width);
+          spans.splice(index, 1);
+        } else {
+          index++;
+        }
+      }
+    };
+    // Coincident pad boundaries can create a zero-length narrow span. Join it
+    // to an equal-width neighbor before it can consume valid wider copper.
+    coalesceEqualWidthSpans();
+
+    // Remove only proposed splits. If a split would create a sub-micron span,
+    // extend the narrower adjoining width across it. Existing short segments
+    // and their endpoints remain untouched.
+    for (let index = 0; spans.length > 1 && index < spans.length; ) {
+      const span = spans[index]!;
+      const spanLength = Math.hypot(
+        span.end.x - span.start.x,
+        span.end.y - span.start.y,
       );
+      if (spanLength >= MIN_INSERTED_SEGMENT_LENGTH) {
+        index++;
+        continue;
+      }
+      const previousIndex = index === 0 ? 0 : index - 1;
+      const left = spans[previousIndex]!;
+      const right = spans[previousIndex + 1]!;
+      spans.splice(previousIndex, 2, {
+        start: left.start,
+        end: right.end,
+        width: Math.min(left.width, right.width),
+      });
+      index = previousIndex;
     }
-    // A component pad can be narrower than the board's global minimum trace
-    // width. Copper must still neck to the physical pad cross-section while it
-    // is inside the pad; the minimum applies again immediately outside it.
-    const effectiveStartLimit = startLimit;
-    const effectiveEndLimit = endLimit;
+    coalesceEqualWidthSpans();
     if (
-      (effectiveStartLimit === null ||
-        start.width <= effectiveStartLimit + WIDTH_EPSILON) &&
-      (effectiveEndLimit === null ||
-        end.width <= effectiveEndLimit + WIDTH_EPSILON)
+      spans.length === 1 &&
+      Math.abs(spans[0]!.width - originalWidth) <= WIDTH_EPSILON
     ) {
       return false;
     }
 
-    const previousStartWidth = start.width;
-    const previousEndWidth = end.width;
-    if (effectiveStartLimit !== null) {
-      start.width = Math.min(start.width, effectiveStartLimit);
-    }
-    if (effectiveEndLimit !== null) {
-      end.width = Math.min(end.width, effectiveEndLimit);
-    }
-
-    if (effectiveStartLimit !== null && effectiveEndLimit === null) {
-      this.insertPadBoundaryTransition(
-        trace,
-        routeIndex,
-        query,
-        "start",
-        start.width,
-        previousEndWidth,
-      );
-    } else if (effectiveStartLimit === null && effectiveEndLimit !== null) {
-      this.insertPadBoundaryTransition(
-        trace,
-        routeIndex,
-        query,
-        "end",
-        end.width,
-        previousStartWidth,
-      );
-    } else if (effectiveStartLimit !== null && effectiveEndLimit !== null) {
-      const startBoundary = this.obstacleIndex.getConnectedPadBoundaryPoint(
-        query,
-        "start",
-      );
-      const endBoundary = this.obstacleIndex.getConnectedPadBoundaryPoint(
-        query,
-        "end",
-      );
-      if (startBoundary && endBoundary) {
-        this.insertPadBoundaryTransition(
-          trace,
-          routeIndex,
-          query,
-          "start",
-          start.width,
-          previousEndWidth,
-        );
-        this.insertPadBoundaryTransition(
-          trace,
-          routeIndex + 2,
-          query,
-          "end",
-          end.width,
-          previousStartWidth,
-        );
-      }
-    }
-
-    this.totalWidthReduction +=
-      previousStartWidth - start.width + (previousEndWidth - end.width);
-    this.repairedPadNeckSegmentCount++;
-    this.obstacleIndex = this.createConservativeObstacleIndex();
-    this.routeCursor = Math.max(0, routeIndex - 1);
-    return true;
-  }
-
-  private getSmallerLimit(a: number | null, b: number | null): number | null {
-    if (a === null) return b;
-    if (b === null) return a;
-    return Math.min(a, b);
-  }
-
-  private insertPadBoundaryTransition(
-    trace: SimplifiedPcbTrace,
-    routeIndex: number,
-    query: CollisionQuery,
-    insideEndpoint: "start" | "end",
-    insideWidth: number,
-    outsideWidth: number,
-  ): void {
-    const boundary = this.obstacleIndex.getConnectedPadBoundaryPoint(
-      query,
-      insideEndpoint,
-    );
-    if (!boundary) return;
-    const inside = insideEndpoint === "start" ? query.start : query.end;
-    const outside = insideEndpoint === "start" ? query.end : query.start;
-    const length = Math.hypot(outside.x - inside.x, outside.y - inside.y);
-    if (length <= 1e-9) return;
-    const epsilon = Math.min(1e-6, length / 4);
-    const direction = {
-      x: (outside.x - inside.x) / length,
-      y: (outside.y - inside.y) / length,
-    };
-    const insideBoundary: WireRoutePoint = {
-      route_type: "wire",
-      x: boundary.x - direction.x * epsilon,
-      y: boundary.y - direction.y * epsilon,
-      width: insideWidth,
-      layer: query.layer,
-    };
-    const outsideBoundary: WireRoutePoint = {
-      ...insideBoundary,
-      x: boundary.x + direction.x * epsilon,
-      y: boundary.y + direction.y * epsilon,
-      width: outsideWidth,
-    };
-    const outsideRoutePoint =
-      insideEndpoint === "start"
-        ? trace.route[routeIndex + 1]
-        : trace.route[routeIndex];
-    const pointBeyondOutside =
-      insideEndpoint === "start"
-        ? trace.route[routeIndex + 2]
-        : trace.route[routeIndex - 1];
-    if (isWire(outsideRoutePoint) && pointBeyondOutside?.route_type === "via") {
-      const nominalWidth = this.resolveNominalTraceWidth(trace);
-      if (
-        !this.obstacleIndex.collides({
-          ...query,
-          start: outsideRoutePoint,
-          end: outsideBoundary,
-          width: nominalWidth,
-        })
-      ) {
-        outsideRoutePoint.width = Math.max(
-          outsideRoutePoint.width,
-          nominalWidth,
-        );
-        outsideBoundary.width = outsideRoutePoint.width;
-      }
-    }
+    start.width = spans[0]!.width;
     trace.route.splice(
       routeIndex + 1,
       0,
-      ...(insideEndpoint === "start"
-        ? [insideBoundary, outsideBoundary]
-        : [outsideBoundary, insideBoundary]),
+      ...spans.slice(1).map(
+        (span): WireRoutePoint => ({
+          route_type: "wire",
+          x: span.start.x,
+          y: span.start.y,
+          width: span.width,
+          layer: query.layer,
+        }),
+      ),
     );
+    this.totalWidthReduction += spans.reduce(
+      (reduction, span) => reduction + Math.max(0, originalWidth - span.width),
+      0,
+    );
+    this.repairedPadNeckSegmentCount++;
+    this.obstacleIndex = this.createObstacleIndex();
+    this.routeCursor = routeIndex;
+    return true;
   }
 
   private resolveNominalTraceWidth(trace: SimplifiedPcbTrace): number {
@@ -414,21 +375,10 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       );
   }
 
-  private createConservativeObstacleIndex() {
-    const conservativeTraces = structuredClone(this.traces);
-    for (const trace of conservativeTraces) {
-      for (let index = 0; index < trace.route.length - 1; index++) {
-        const start = trace.route[index];
-        const end = trace.route[index + 1];
-        if (!isWire(start) || !isWire(end) || start.layer !== end.layer) {
-          continue;
-        }
-        start.width = Math.max(start.width, end.width);
-      }
-    }
+  private createObstacleIndex() {
     return new SpatialObstacleIndex(
       this.inputProblem.simpleRouteJson,
-      conservativeTraces,
+      this.traces,
       undefined,
       [],
       this.connectionNameResolver,
@@ -513,13 +463,13 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
               : start.layer === "bottom"
                 ? "#376fc4"
                 : "#777",
-          strokeWidth: Math.max(start.width, end.width),
+          strokeWidth: start.width,
         });
       }
     }
     return {
       coordinateSystem: "cartesian",
-      title: "Power trace direction-independent clearance repair",
+      title: "Power trace clearance repair",
       lines,
       points: [],
       circles: [],

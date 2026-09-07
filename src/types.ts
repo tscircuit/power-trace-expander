@@ -2,6 +2,7 @@ export type WireRoutePoint = {
   route_type: "wire";
   x: number;
   y: number;
+  /** Width of the outgoing segment to the next wire point on this layer. */
   width: number;
   layer: string;
   start_pcb_port_id?: string;
