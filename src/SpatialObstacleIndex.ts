@@ -22,6 +22,8 @@ type ConnectedPad = {
   canonicalConnectionNames: ReadonlySet<string>;
 };
 
+type ConnectionNames = IndexedObstacle["connectionNames"];
+
 const getBoardLayers = (layerCount: number) => [
   "top",
   ...Array.from(
@@ -97,10 +99,22 @@ export class SpatialObstacleIndex {
       this.defaultViaHoleDiameter,
     );
     this.connectionNameResolver = connectionNameResolver;
-    this.connectionNameSets = this.items.map(
-      (item) =>
-        new Set(connectionNameResolver.canonicalize(item.connectionNames)),
-    );
+    // Rectangles approximating one copper object share its alias array.
+    // Resolve that array once per index, including large copper-pour aliases.
+    const canonicalNamesByAliases = new Map<
+      ConnectionNames,
+      ReadonlySet<string>
+    >();
+    this.connectionNameSets = this.items.map((item) => {
+      let canonicalNames = canonicalNamesByAliases.get(item.connectionNames);
+      if (!canonicalNames) {
+        canonicalNames = new Set(
+          connectionNameResolver.canonicalize(item.connectionNames),
+        );
+        canonicalNamesByAliases.set(item.connectionNames, canonicalNames);
+      }
+      return canonicalNames;
+    });
     this.copperObjectIds = this.items.map(
       (item, itemIndex) => item.copperObjectId ?? `indexed-item:${itemIndex}`,
     );
