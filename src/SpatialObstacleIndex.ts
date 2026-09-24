@@ -36,6 +36,7 @@ const getBoardLayers = (layerCount: number) => [
 export class SpatialObstacleIndex {
   readonly items: IndexedObstacle[];
   readonly clearance: number;
+  readonly minViaEdgeToPadEdgeClearance: number | undefined;
   readonly boardEdgeClearance: number;
   readonly boardLayers: string[];
   readonly minViaHoleEdgeToViaHoleEdgeClearance: number;
@@ -67,6 +68,8 @@ export class SpatialObstacleIndex {
       simpleRouteJson.minTraceToPadEdgeClearance ?? 0,
       0.1,
     );
+    this.minViaEdgeToPadEdgeClearance =
+      simpleRouteJson.minViaEdgeToPadEdgeClearance;
     this.boardEdgeClearance =
       simpleRouteJson.minBoardEdgeClearance ?? this.clearance;
     this.minViaHoleEdgeToViaHoleEdgeClearance = Math.max(
@@ -531,7 +534,10 @@ export class SpatialObstacleIndex {
         ignoreTraceIndex: query.ignoreTraceIndex,
         ignoreTraceIndices: query.ignoreTraceIndices,
         ignoreRouteRange: query.ignoreRouteRange,
-        obstacleClearance: query.obstacleClearance,
+        obstacleClearance: Math.max(
+          query.obstacleClearance ?? this.clearance,
+          this.minViaEdgeToPadEdgeClearance ?? 0,
+        ),
         blockSameNetObstacles: query.blockSameNetObstacles,
         sameNetObstacleClearance: query.sameNetObstacleClearance,
       };
