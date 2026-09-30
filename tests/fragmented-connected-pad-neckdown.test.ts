@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import "bun-match-svg";
 import {
+  type GraphicsObject,
   getSvgFromGraphicsObject,
   stackGraphicsHorizontally,
-  type GraphicsObject,
 } from "graphics-debug";
 import {
   createFragmentedConnectedPadNeckdownProblem,
@@ -37,11 +37,11 @@ const getWireSegments = (trace: SimplifiedPcbTrace) =>
 const drawFragmentedPadTrace = ({
   problem,
   trace,
-  outputMinimumWidth,
+  measuredOutputWidth,
 }: {
   problem: SimpleRouteJson;
   trace: SimplifiedPcbTrace;
-  outputMinimumWidth?: number;
+  measuredOutputWidth?: number;
 }): GraphicsObject => {
   const terminalViewMaximumX = 0.3;
   const terminalTraceStart = trace.route[0];
@@ -65,11 +65,15 @@ const drawFragmentedPadTrace = ({
             fill:
               terminalTraceStart.width < problem.minTraceWidth
                 ? "#dc2626"
-                : "#2563eb",
+                : measuredOutputWidth
+                  ? "#16a34a"
+                  : "#2563eb",
             stroke:
               terminalTraceStart.width < problem.minTraceWidth
                 ? "#991b1b"
-                : "#1d4ed8",
+                : measuredOutputWidth
+                  ? "#166534"
+                  : "#1d4ed8",
           },
         ]
       : [];
@@ -136,8 +140,8 @@ const drawFragmentedPadTrace = ({
       {
         x: 0,
         y: 0.42,
-        text: outputMinimumWidth
-          ? "CURRENT BUGGY OUTPUT"
+        text: measuredOutputWidth
+          ? "FIXED OUTPUT USES THE COMPLETE PAD"
           : "EXPECTED TERMINAL SEGMENT",
         fontSize: 0.065,
         color: "#0f172a",
@@ -166,19 +170,23 @@ const drawFragmentedPadTrace = ({
       {
         x: 0,
         y: -0.34,
-        text: outputMinimumWidth
-          ? `RED OUTPUT: ${outputMinimumWidth.toFixed(4)} mm < ${problem.minTraceWidth.toFixed(4)} mm MINIMUM`
+        text: measuredOutputWidth
+          ? `GREEN OUTPUT: ${measuredOutputWidth.toFixed(4)} mm ≥ ${problem.minTraceWidth.toFixed(4)} mm MINIMUM`
           : `BLUE INPUT: ${problem.minTraceWidth.toFixed(4)} mm FITS`,
         fontSize: 0.055,
-        color: outputMinimumWidth ? "#991b1b" : "#1d4ed8",
+        color: measuredOutputWidth ? "#166534" : "#1d4ed8",
       },
     ],
   };
 };
 
-test("reproduces a sub-minimum terminal neckdown on a fragmented connected pad", async () => {
+test("preserves the minimum terminal width on a fragmented connected pad", async () => {
   const fragmentedPadInput = createFragmentedConnectedPadNeckdownProblem();
-  const inputTrace = fragmentedPadInput.traces![0]!;
+  const inputTrace = fragmentedPadInput.traces?.[0];
+  const terminal = fragmentedPadInput.connections[0]?.pointsToConnect[0];
+  if (!inputTrace || !terminal) {
+    throw new Error("Expected the fixture to contain a trace and terminal");
+  }
   const solver = new PowerTraceExpanderSolver(
     structuredClone(fragmentedPadInput),
     { allowNewVias: false },
@@ -186,17 +194,14 @@ test("reproduces a sub-minimum terminal neckdown on a fragmented connected pad",
 
   solver.solve();
 
-  const outputTrace = solver.getOutput()[0]!;
+  const outputTrace = solver.getOutput()[0];
+  if (!outputTrace) throw new Error("Expected the solver to return a trace");
   const minimumOutputWidth = getMinimumWireWidth(outputTrace);
   const inputSegments = getWireSegments(inputTrace);
   const outputSegments = getWireSegments(outputTrace);
   const belowMinimumSegments = outputSegments.filter(
     (segment) => segment.width < fragmentedPadInput.minTraceWidth,
   );
-  const materialBelowMinimumSegments = belowMinimumSegments.filter(
-    (segment) => segment.length > 0.001,
-  );
-  const terminal = fragmentedPadInput.connections[0]!.pointsToConnect[0]!;
   const minimumTraceRadius = FRAGMENTED_PAD_MINIMUM_TRACE_WIDTH / 2;
   const fragmentedPadObstacles = fragmentedPadInput.obstacles.filter(
     (obstacle) => obstacle.connectedTo.includes(FRAGMENTED_PAD_ID),
@@ -218,17 +223,17 @@ test("reproduces a sub-minimum terminal neckdown on a fragmented connected pad",
       (segment) => segment.width >= fragmentedPadInput.minTraceWidth,
     ),
   ).toBe(true);
-  expect(minimumOutputWidth).toBeCloseTo(0.08, 6);
-  expect(minimumOutputWidth).toBeLessThan(fragmentedPadInput.minTraceWidth);
-  expect(belowMinimumSegments.length).toBeGreaterThan(0);
+  expect(minimumOutputWidth).toBeCloseTo(0.28, 6);
+  expect(minimumOutputWidth).toBeGreaterThanOrEqual(
+    fragmentedPadInput.minTraceWidth,
+  );
+  expect(belowMinimumSegments).toHaveLength(0);
   expect(
-    belowMinimumSegments.every(
-      (segment) => Math.abs(segment.width - 0.08) < 1e-6,
+    outputSegments.some(
+      (segment) =>
+        Math.abs(segment.width - 0.28) < 1e-6 && segment.length > 0.29,
     ),
   ).toBe(true);
-  expect(materialBelowMinimumSegments).toHaveLength(1);
-  expect(materialBelowMinimumSegments[0]!.width).toBeCloseTo(0.08, 6);
-  expect(materialBelowMinimumSegments[0]!.length).toBeGreaterThan(0.29);
 
   const svg = getSvgFromGraphicsObject(
     stackGraphicsHorizontally([
@@ -239,7 +244,7 @@ test("reproduces a sub-minimum terminal neckdown on a fragmented connected pad",
       drawFragmentedPadTrace({
         problem: fragmentedPadInput,
         trace: outputTrace,
-        outputMinimumWidth: minimumOutputWidth,
+        measuredOutputWidth: minimumOutputWidth,
       }),
     ]),
     { backgroundColor: "white", svgWidth: 1400, svgHeight: 460 },
