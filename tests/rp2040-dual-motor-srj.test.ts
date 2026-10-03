@@ -16,26 +16,20 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   const problem = structuredClone(
     rp2040DualMotorProblem,
   ) as unknown as SimpleRouteJson;
-  const before = getTraceWidthMetrics(problem, problem.traces ?? []);
-  const conservativeBefore = getTraceWidthMetrics(
-    problem,
-    problem.traces ?? [],
-    { segmentWidthSemantics: "endpoint-minimum" },
-  );
+  const before = getTraceWidthMetrics(problem, problem.traces ?? [], {
+    segmentWidthSemantics: "circuit-json",
+  });
   const solver = new PowerTraceExpanderSolver(problem);
   const startTime = performance.now();
 
   solver.solve();
 
   const runtimeMs = performance.now() - startTime;
-  const after = getTraceWidthMetrics(problem, solver.getOutput());
-  const conservativeAfter = getTraceWidthMetrics(problem, solver.getOutput(), {
-    segmentWidthSemantics: "endpoint-minimum",
+  const after = getTraceWidthMetrics(problem, solver.getOutput(), {
+    segmentWidthSemantics: "circuit-json",
   });
   const powerBefore = before.get(1)!;
   const powerAfter = after.get(1)!;
-  const conservativePowerBefore = conservativeBefore.get(1)!;
-  const conservativePowerAfter = conservativeAfter.get(1)!;
   const logicBefore = before.get(0.25)!;
   const logicAfter = after.get(0.25)!;
   const upperMotorATrace = solver
@@ -69,10 +63,10 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
       continue;
     }
     const segmentLength = Math.hypot(end.x - start.x, end.y - start.y);
-    const conservativeWidth = Math.min(start.width, end.width);
+    const segmentWidth = start.width;
     upperMotorALength += segmentLength;
-    upperMotorAWidthArea += segmentLength * conservativeWidth;
-    if (conservativeWidth >= 1 - 1e-6) {
+    upperMotorAWidthArea += segmentLength * segmentWidth;
+    if (segmentWidth >= 1 - 1e-6) {
       upperMotorANominalLength += segmentLength;
     }
     if (start.layer === "bottom") upperMotorABottomLength += segmentLength;
@@ -89,18 +83,18 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(powerAfter.coverageByFraction[0.5]).toBeGreaterThan(0.92);
   expect(powerAfter.coverageByFraction[0.875]).toBeGreaterThan(0.865);
   expect(powerAfter.normalizedWidthDeficit).toBeLessThan(0.07);
+  expect(powerAfter.normalizedWidthDeficit).toBeLessThan(
+    powerBefore.normalizedWidthDeficit / 7,
+  );
   expect(powerAfter.longestBelowHalfNominalRun).toBeLessThan(4);
   expect(powerAfter.longestUnderNominalRun).toBeLessThan(8.6);
   expect(powerAfter.longestBelowHalfNominalRun).toBeLessThan(
     powerBefore.longestBelowHalfNominalRun / 7,
   );
   expect(powerAfter.totalLength / powerBefore.totalLength).toBeLessThan(1.12);
-  expect(conservativePowerAfter.nominalCoverage).toBeGreaterThan(0.84);
-  expect(conservativePowerAfter.averageWidth).toBeGreaterThan(0.925);
-  expect(conservativePowerAfter.normalizedWidthDeficit).toBeLessThan(0.075);
-  expect(conservativePowerAfter.normalizedWidthDeficit).toBeLessThan(
-    conservativePowerBefore.normalizedWidthDeficit / 7,
-  );
+  // An exact boundary owns the following segment's width. Endpoint-minimum
+  // metrics would assign that neck to the entire preceding wide segment, so
+  // the quality gates above measure serialized physical copper directly.
   expect(logicAfter.nominalCoverage).toBeGreaterThan(0.99);
   expect(logicAfter.nominalCoverage).toBeGreaterThan(
     logicBefore.nominalCoverage * 2,
@@ -205,9 +199,8 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
       ).toBe(false);
     }
   }
-  // Core may reverse this route when it maps the solver result back to the
-  // source trace. Cleanup must preserve the narrow boundary width so the
-  // reversed segment cannot become a 1 mm USB fanout collision.
+  // Keep the physical segment starting here narrow across the USB fanout.
+  // Core >=0.0.1737 preserves this segment's width when reversing the route.
   expect(
     reversibleUsbBoundary?.route_type === "wire"
       ? reversibleUsbBoundary.width
@@ -256,7 +249,6 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(upperMotorABottomLength).toBeGreaterThan(10);
   expect(upperMotorANominalLength / upperMotorALength).toBeGreaterThan(0.97);
   expect(upperMotorAWidthArea / upperMotorALength).toBeGreaterThan(0.985);
-  expect(runtimeMs).toBeLessThan(20_000);
-
   await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path);
+  expect(runtimeMs).toBeLessThan(20_000);
 });
