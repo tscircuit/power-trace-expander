@@ -1,9 +1,4 @@
-import type {
-  IndexedObstacle,
-  Obstacle,
-  Point,
-  WireRoutePoint,
-} from "./types";
+import type { IndexedObstacle, Obstacle, Point, WireRoutePoint } from "./types";
 
 export const WIDTH_EPSILON = 1e-6;
 
@@ -209,6 +204,22 @@ export function approximateObstacleWithRects(
   obstacle: Obstacle,
   maxCellSize = 0.6,
 ): IndexedObstacle[] {
+  if (obstacle.isNonPlatedHole && obstacle.shape === "circle") {
+    const radius = obstacle.width / 2;
+    return [
+      {
+        minX: obstacle.center.x - radius,
+        minY: obstacle.center.y - radius,
+        maxX: obstacle.center.x + radius,
+        maxY: obstacle.center.y + radius,
+        layers: obstacle.layers,
+        kind: "obstacle",
+        obstacleKind: "hole",
+        connectionNames: obstacle.connectedTo,
+        exactShape: { type: "circle", center: obstacle.center, radius },
+      },
+    ];
+  }
   const rotation = ((obstacle.ccwRotationDegrees ?? 0) * Math.PI) / 180;
   const columns = Math.max(1, Math.ceil(obstacle.width / maxCellSize));
   const rows = Math.max(1, Math.ceil(obstacle.height / maxCellSize));
@@ -238,12 +249,14 @@ export function approximateObstacleWithRects(
         maxY: Math.max(...corners.map((point) => point.y)),
         layers: obstacle.layers,
         kind: "obstacle",
-        obstacleKind: obstacle.connectedTo[0]?.startsWith("pcb_via_")
-          ? "via"
-          : obstacle.connectedTo[0]?.startsWith("pcb_smtpad_") ||
-              obstacle.connectedTo[0]?.startsWith("pcb_plated_hole_")
-            ? "pad"
-            : "other",
+        obstacleKind: obstacle.isNonPlatedHole
+          ? "hole"
+          : obstacle.connectedTo[0]?.startsWith("pcb_via_")
+            ? "via"
+            : obstacle.connectedTo[0]?.startsWith("pcb_smtpad_") ||
+                obstacle.connectedTo[0]?.startsWith("pcb_plated_hole_")
+              ? "pad"
+              : "other",
         connectionNames: obstacle.connectedTo,
         exactShape: { type: "polygon", points: corners },
       });
@@ -269,8 +282,7 @@ export function splitUnderWidthWireSegments(
       current.route_type !== "wire" ||
       next.route_type !== "wire" ||
       current.layer !== next.layer ||
-      (current.width >= nominalWidth - WIDTH_EPSILON &&
-        next.width >= nominalWidth - WIDTH_EPSILON)
+      current.width >= nominalWidth - WIDTH_EPSILON
     ) {
       continue;
     }
@@ -283,7 +295,10 @@ export function splitUnderWidthWireSegments(
         route_type: "wire",
         x: current.x + (next.x - current.x) * t,
         y: current.y + (next.y - current.y) * t,
-        width: current.width + (next.width - current.width) * t,
+        // Circuit JSON assigns the segment [i, i + 1] the width at i. Every
+        // inserted point must therefore retain the original segment width;
+        // interpolation would silently add or remove copper before routing.
+        width: current.width,
         layer: current.layer,
       });
     }

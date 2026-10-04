@@ -61,6 +61,31 @@ Port aliases are used to recognize same-net copper for clearance, but an
 otherwise-unmatched child route does not inherit a board-level connection's
 nominal width. This keeps imported internal routing byte-for-byte while still
 allowing a connected board trace to enter its pads, vias, and boundary copper.
+Sharing one or more physical-net aliases is not treated as mutation ownership:
+only traces with a directly declared connection in the current SRJ may be
+expanded, cleaned up, relocated, or locally shoved.
+
+Every expansion, cleanup, clearance-repair, and final-acceptance boundary is
+validated against the last physical-connectivity-safe trace snapshot. An output
+may merge terminal components, but it may not split a component that was
+connected before the phase. A rejected phase is rolled back transactionally,
+and committed mutation counters describe only the geometry that remains in the
+emitted output. Opaque child routes are also compared byte-for-byte at those
+boundaries. Pre-existing via violations on immutable child traces are measured
+without being rewritten; the result is reported as `best_effort` with
+`initialImmutableViaViolationCount`, `remainingImmutableViaViolationCount`,
+`initialImmutableViaViolationPairCount`,
+`remainingImmutableViaViolationPairCount`, and
+`skippedImmutableViaRepairCount` instead of claiming a DRC-clean board. New
+violation pairs are compared by
+stable via, rule, and copper-object signatures, so repairing one old collision
+cannot hide a different collision introduced on the same via.
+
+The physical invariant covers same-net open circuits and new collisions with
+immutable vias. Candidate collision checks continue to enforce cross-net,
+clearance, drill, and board-edge rules; a separate whole-board final DRC
+signature remains appropriate for callers that need a universal no-new-DRC
+certificate.
 
 The solver automatically repeats productive passes and stops when a pass adds
 less than 0.1% of the total nominal copper area, with a four-pass hard cap.

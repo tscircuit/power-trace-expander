@@ -3,19 +3,46 @@ import type { SimpleRouteJson, SimplifiedPcbTrace } from "./types";
 const definedNames = (names: Array<string | null | undefined>) =>
   names.filter((name): name is string => Boolean(name));
 
+const mapLayerNameToZ = (layerName: string, layerCount: number) => {
+  if (layerName === "top") return 0;
+  if (layerName === "bottom") return layerCount - 1;
+  return Number.parseInt(layerName.slice(5), 10);
+};
+
+const getPositionLayerAlias = (
+  point: { x: number; y: number },
+  layers: string[],
+  layerCount: number,
+) => {
+  const pointHash = `${Math.round(point.x * 100)},${Math.round(point.y * 100)}`;
+  const zSignature = layers
+    .map((layer) => mapLayerNameToZ(layer, layerCount))
+    .sort()
+    .join("-");
+  return `${pointHash}:${zSignature}`;
+};
+
 /**
  * Canonicalizes the aliases used for one electrical net in SimpleRouteJson.
  * Imported subcircuits often use a different source-trace name at their
  * boundary, but both routes still share a pcb_port_id. Pads and vias also
  * carry the complete connectedTo alias set, so unioning these identifiers
- * reproduces the connectivity semantics used by @tscircuit/checks.
+ * reproduces the connectivity aliases used by the capacity autorouter.
  */
 export class ConnectionNameResolver {
   private readonly parent = new Map<string, string>();
+  // Retain only aliases from the most recently indexed obstacle collection.
+  // Cloned boards and transient trace arrays cannot accumulate across rebuilds.
+  private cachedObstacles: SimpleRouteJson["obstacles"] | undefined;
+  private readonly canonicalSetsByAliases = new Map<
+    string[],
+    { aliases: string[]; canonicalNames: ReadonlySet<string> } | null
+  >();
 
   constructor(
     simpleRouteJson: SimpleRouteJson,
     traces: SimplifiedPcbTrace[] = simpleRouteJson.traces ?? [],
+    options: { includePhysicalPositionAliases?: boolean } = {},
   ) {
     for (const connection of simpleRouteJson.connections) {
       this.unionAll(
@@ -23,10 +50,20 @@ export class ConnectionNameResolver {
           connection.name,
           connection.source_trace_id,
           connection.rootConnectionName,
+          connection.netConnectionName,
           ...(connection.mergedConnectionNames ?? []),
           ...connection.pointsToConnect.flatMap((point) => [
             point.pointId,
             point.pcb_port_id,
+            ...(options.includePhysicalPositionAliases
+              ? [
+                  getPositionLayerAlias(
+                    point,
+                    point.layers ?? [point.layer],
+                    simpleRouteJson.layerCount,
+                  ),
+                ]
+              : []),
           ]),
         ]),
       );
@@ -44,12 +81,57 @@ export class ConnectionNameResolver {
       );
     }
     for (const obstacle of simpleRouteJson.obstacles) {
-      this.unionAll(obstacle.connectedTo);
+      this.unionAll(
+        options.includePhysicalPositionAliases
+          ? definedNames([
+              obstacle.obstacleId,
+              ...obstacle.connectedTo,
+              ...(obstacle.offBoardConnectsTo ?? []),
+              getPositionLayerAlias(
+                obstacle.center,
+                obstacle.layers,
+                simpleRouteJson.layerCount,
+              ),
+            ])
+          : obstacle.connectedTo,
+      );
+    }
+    this.setCacheableObstacles(simpleRouteJson.obstacles);
+  }
+
+  setCacheableObstacles(obstacles: SimpleRouteJson["obstacles"]): void {
+    if (this.cachedObstacles === obstacles) return;
+    this.cachedObstacles = obstacles;
+    this.canonicalSetsByAliases.clear();
+    for (const obstacle of obstacles) {
+      this.canonicalSetsByAliases.set(obstacle.connectedTo, null);
     }
   }
 
   canonicalize(names: string[]) {
     return [...new Set(names.map((name) => this.find(name)))];
+  }
+
+  /** Reuse static copper aliases across spatial-index rebuilds. */
+  canonicalizeToSet(names: string[]): ReadonlySet<string> {
+    const cached = this.canonicalSetsByAliases.get(names);
+    if (
+      cached &&
+      names.length === cached.aliases.length &&
+      names.every((name, index) => name === cached.aliases[index])
+    ) {
+      return cached.canonicalNames;
+    }
+    // Net unions finish in the constructor. Later lookups can only add
+    // isolated names, so existing roots remain valid for this resolver.
+    const canonicalNames = new Set(this.canonicalize(names));
+    if (this.canonicalSetsByAliases.has(names)) {
+      this.canonicalSetsByAliases.set(names, {
+        aliases: [...names],
+        canonicalNames,
+      });
+    }
+    return canonicalNames;
   }
 
   private unionAll(names: string[]) {
