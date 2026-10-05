@@ -69,7 +69,8 @@ export type SimpleRouteConnection = {
 export type Obstacle = {
   obstacleId?: string;
   componentId?: string;
-  type: "rect";
+  /** SRJ `oval` obstacles are ellipses; circular pads have equal dimensions. */
+  type: "rect" | "oval";
   layers: string[];
   zLayers?: number[];
   center: Point;
