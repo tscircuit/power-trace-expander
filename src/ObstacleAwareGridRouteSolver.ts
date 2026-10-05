@@ -238,15 +238,23 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
         continue;
       const nextFlatIndex = this.toFlatIndex(row, column);
       if (this.closed[nextFlatIndex]) continue;
+      const needsStartConnectorCost =
+        node.parentIndex === -1 && this.problem.requireOctilinear;
+      let moveCost =
+        this.problem.gridSize *
+        (deltaRow !== 0 && deltaColumn !== 0 ? Math.SQRT2 : 1);
+      // Ordinary grid moves have a known cost before testing their copper.
+      // Keep the connector-dependent cost for an off-grid octilinear start.
+      if (
+        !needsStartConnectorCost &&
+        node.g + moveCost >= this.bestCost[nextFlatIndex]!
+      ) {
+        continue;
+      }
       const point = this.cellToPoint(row, column);
       const connector = this.getAllowedConnector(node, point);
       if (connector === null) continue;
-
-      const moveCost =
-        node.parentIndex === -1 && this.problem.requireOctilinear
-          ? getPathLength(connector)
-          : this.problem.gridSize *
-            (deltaRow !== 0 && deltaColumn !== 0 ? Math.SQRT2 : 1);
+      if (needsStartConnectorCost) moveCost = getPathLength(connector);
       const g = node.g + moveCost;
       if (g >= this.bestCost[nextFlatIndex]!) continue;
       this.bestCost[nextFlatIndex] = g;
