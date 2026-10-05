@@ -9,6 +9,7 @@ import {
   countNonOctilinearSegments,
   getPathLength,
 } from "./octilinear";
+import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
   InflationCorridorSegment,
@@ -166,8 +167,22 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   initialPadClearanceViolationCountByClearance: Record<string, number> = {};
   remainingPadClearanceViolationCountByClearance: Record<string, number> = {};
   budgetLimited = false;
+  connectivityValidationCount = 0;
+  connectivityRollbackCount = 0;
+  connectivityRegressionEndpointIds: string[] = [];
+  connectivityValidationError: string | null = null;
+  connectivityRollbackMutationStats: Record<string, number> | null = null;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly connectionByTraceId = new Map<
+    string,
+    SimpleRouteConnection | null
+  >();
+  private readonly connectivityInvariant: PhysicalConnectivityInvariant;
+  private readonly initialConnectivitySafeTraces: SimplifiedPcbTrace[];
+  private readonly mutableTraceIndices: number[];
+  private readonly mutableTraceIndexSet: Set<number>;
+  private readonly viaRepairTraceIndices: number[];
   private readonly traceIndices: number[];
   private readonly maxRerouteLength: number;
   private readonly clearancePaddingTiers: number[];
@@ -183,6 +198,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private pendingPushedViaRepair: PushedViaRepair | null = null;
   private alternatePushedViaRepairs: PushedViaRepair[] = [];
   private pushedViaRepairRollbackTraces: SimplifiedPcbTrace[] | null = null;
+  private connectivityFinalized = false;
+  private finalizedMutatedTraceIndices: number[] = [];
   private resumePhase: Exclude<
     CleanupPhase,
     "evaluate-candidate" | "shove-clearance" | "complete"
@@ -197,6 +214,11 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     super();
     this.inputProblem = structuredClone(inputProblem);
     this.traces = structuredClone(inputProblem.traces);
+    this.initialConnectivitySafeTraces = structuredClone(inputProblem.traces);
+    this.connectivityInvariant = new PhysicalConnectivityInvariant(
+      this.inputProblem.simpleRouteJson,
+      this.initialConnectivitySafeTraces,
+    );
     this.connectionNameResolver = new ConnectionNameResolver(
       inputProblem.simpleRouteJson,
       this.traces,
@@ -207,14 +229,46 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       ...(inputProblem.clearancePaddingTiers ?? [0.1, 0.05, 0]),
       0,
     ]).filter((padding) => padding >= 0);
-    const requestedIndices = inputProblem.traceIndices
-      ? new Set(inputProblem.traceIndices)
-      : null;
-    this.traceIndices = this.traces.flatMap((trace, traceIndex) =>
-      (!requestedIndices || requestedIndices.has(traceIndex)) &&
-      this.resolveNominalTraceWidth(trace) >= 0.5 - WIDTH_EPSILON
-        ? [traceIndex]
-        : [],
+    const allTraceIndices = this.traces.map((_, traceIndex) => traceIndex);
+    const normalizeIndices = (
+      indices: readonly number[] | undefined,
+      label: string,
+      fallback: readonly number[],
+    ) => {
+      const normalized = [...new Set(indices ?? fallback)];
+      for (const traceIndex of normalized) {
+        if (
+          !Number.isInteger(traceIndex) ||
+          traceIndex < 0 ||
+          traceIndex >= this.traces.length
+        ) {
+          throw new RangeError(`Invalid cleanup ${label} index: ${traceIndex}`);
+        }
+      }
+      return normalized;
+    };
+    const requestedIndices = normalizeIndices(
+      inputProblem.traceIndices,
+      "trace",
+      allTraceIndices,
+    );
+    this.viaRepairTraceIndices = normalizeIndices(
+      inputProblem.viaRepairTraceIndices,
+      "via repair trace",
+      requestedIndices,
+    );
+    this.mutableTraceIndices = normalizeIndices(
+      inputProblem.mutableTraceIndices,
+      "mutable trace",
+      requestedIndices,
+    );
+    this.mutableTraceIndexSet = new Set(this.mutableTraceIndices);
+    // Via relocation is a DFM repair and applies to every requested trace.
+    // The later path cleanup remains limited to wide/power connections.
+    this.traceIndices = requestedIndices.filter(
+      (traceIndex) =>
+        this.resolveNominalTraceWidth(this.traces[traceIndex]!) >=
+        0.5 - WIDTH_EPSILON,
     );
     for (const traceIndex of this.traceIndices) {
       this.initialTraceLengths.set(
@@ -270,6 +324,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         this.startNextViaGridCandidate();
         break;
       case "complete":
+        this.ensureConnectivitySafeOutput();
         this.solved = true;
         break;
     }
@@ -277,7 +332,9 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   }
 
   private repairNextVia() {
-    const trace = this.traces[this.traceCursor];
+    const traceIndex = this.viaRepairTraceIndices[this.traceCursor];
+    const trace =
+      traceIndex === undefined ? undefined : this.traces[traceIndex];
     if (!trace) {
       this.traceCursor = 0;
       this.routeCursor = 0;
@@ -313,7 +370,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         holeDiameter:
           via.via_hole_diameter ?? this.obstacleIndex.defaultViaHoleDiameter,
         connectionNames,
-        ignoreTraceIndex: this.traceCursor,
+        ignoreTraceIndex: traceIndex,
         ignoreRouteRange: { start: viaIndex, end: viaIndex },
         obstacleClearance: padClearance,
         blockSameNetObstacles: true,
@@ -388,6 +445,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     viaIndex: number,
     padClearance: number,
   ): PushedViaRepair[] {
+    const traceIndex = this.viaRepairTraceIndices[this.traceCursor];
+    if (traceIndex === undefined) return [];
     const context = this.createViaRepairContext(trace, viaIndex);
     if (!context) return [];
     const pushableCandidates = context.candidates.flatMap((point) => {
@@ -413,7 +472,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
           if (
             collision.kind !== "trace" ||
             collision.traceIndex === undefined ||
-            collision.traceIndex === this.traceCursor
+            collision.traceIndex === traceIndex ||
+            !this.mutableTraceIndexSet.has(collision.traceIndex)
           ) {
             return [];
           }
@@ -463,7 +523,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         ) === index,
     );
     return selectedCandidates.slice(0, 12).map((candidate) => ({
-      traceIndex: this.traceCursor,
+      traceIndex,
       viaIndex,
       point: candidate.point,
       padClearance,
@@ -579,9 +639,10 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     padClearance: number,
     ignoreTraceIndices?: number[],
   ) {
+    const traceIndex = this.viaRepairTraceIndices[this.traceCursor];
     const common = {
       connectionNames: context.connectionNames,
-      ignoreTraceIndex: this.traceCursor,
+      ignoreTraceIndex: traceIndex,
       ignoreTraceIndices,
       ignoreRouteRange: context.ignoreRouteRange,
       obstacleClearance: padClearance,
@@ -619,6 +680,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     padClearance: number,
     ignoreTraceIndices?: number[],
   ) {
+    const traceIndex = this.viaRepairTraceIndices[this.traceCursor];
     if (
       this.obstacleIndex.collidesVia({
         point,
@@ -626,7 +688,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         padDiameter: context.viaDiameter,
         holeDiameter: context.holeDiameter,
         connectionNames: context.connectionNames,
-        ignoreTraceIndex: this.traceCursor,
+        ignoreTraceIndex: traceIndex,
         ignoreTraceIndices,
         ignoreRouteRange: { start: context.viaIndex, end: context.viaIndex },
         obstacleClearance: padClearance,
@@ -679,6 +741,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
           ...repair.corridor.map((segment) => segment.width),
         ),
         pushOnlyNominalWidthsBelow: Number.POSITIVE_INFINITY,
+        mutableTraceIndices: this.mutableTraceIndices,
         corridor: repair.corridor,
         maxRerouteLength: this.maxRerouteLength,
       },
@@ -1356,7 +1419,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         if (
           collision.kind !== "trace" ||
           collision.traceIndex === undefined ||
-          collision.traceIndex === candidate.traceIndex
+          collision.traceIndex === candidate.traceIndex ||
+          !this.mutableTraceIndexSet.has(collision.traceIndex)
         ) {
           return null;
         }
@@ -1401,6 +1465,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         powerTraceIndex: candidate.traceIndex,
         nominalPowerWidth: corridorWidth,
         pushOnlyNominalWidthsBelow: candidate.width,
+        mutableTraceIndices: this.mutableTraceIndices,
         corridor,
         maxRerouteLength: this.maxRerouteLength,
       },
@@ -2110,16 +2175,21 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   }
 
   private findConnectionForTrace(trace: SimplifiedPcbTrace) {
+    const cached = this.connectionByTraceId.get(trace.pcb_trace_id);
+    if (cached !== undefined) return cached ?? undefined;
     const traceNames = new Set(
       this.connectionNameResolver.canonicalize(
         this.getTraceConnectionNames(trace),
       ),
     );
-    return this.inputProblem.simpleRouteJson.connections.find((connection) =>
-      this.connectionNameResolver
-        .canonicalize(this.getConnectionNames(connection))
-        .some((name) => traceNames.has(name)),
-    );
+    const connection =
+      this.inputProblem.simpleRouteJson.connections.find((connection) =>
+        this.connectionNameResolver
+          .canonicalize(this.getConnectionNames(connection))
+          .some((name) => traceNames.has(name)),
+      ) ?? null;
+    this.connectionByTraceId.set(trace.pcb_trace_id, connection);
+    return connection ?? undefined;
   }
 
   private getConnectionNames(connection: SimpleRouteConnection) {
@@ -2127,6 +2197,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       connection.name,
       connection.source_trace_id,
       connection.rootConnectionName,
+      connection.netConnectionName,
       ...(connection.mergedConnectionNames ?? []),
     ].filter((name): name is string => Boolean(name));
   }
@@ -2142,20 +2213,105 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     ].filter((name): name is string => Boolean(name));
   }
 
+  private ensureConnectivitySafeOutput() {
+    if (this.connectivityFinalized) return;
+    this.connectivityFinalized = true;
+    this.connectivityValidationCount++;
+    try {
+      const validation = this.connectivityInvariant.validate(this.traces);
+      this.connectivityValidationError ??= validation.validationError ?? null;
+      if (validation.safe) {
+        this.finalizedMutatedTraceIndices = this.getMutatedTraceIndices();
+        return;
+      }
+      this.connectivityRegressionEndpointIds = [
+        ...new Set(
+          validation.regressions.flatMap(
+            (regression) => regression.baselineEndpointLabels,
+          ),
+        ),
+      ];
+    } catch (error) {
+      this.connectivityValidationError =
+        error instanceof Error ? error.message : String(error);
+    }
+
+    this.connectivityRollbackCount++;
+    this.connectivityRollbackMutationStats = {
+      committedClearanceShoveCount: this.committedClearanceShoveCount,
+      viaPairCountRemoved: this.viaPairCountRemoved,
+      viaCountRemoved: this.viaCountRemoved,
+      simplifiedPathCount: this.simplifiedPathCount,
+      normalizedSegmentCount: this.normalizedSegmentCount,
+      achievedExtraClearanceCount: this.achievedExtraClearanceCount,
+      relocatedViaCount: this.relocatedViaCount,
+      committedPushedViaRepairCount: this.committedPushedViaRepairCount,
+      padClearanceRerouteCount: this.padClearanceRerouteCount,
+    };
+    this.committedClearanceShoveCount = 0;
+    this.viaPairCountRemoved = 0;
+    this.viaCountRemoved = 0;
+    this.simplifiedPathCount = 0;
+    this.normalizedSegmentCount = 0;
+    this.achievedExtraClearanceCount = 0;
+    this.relocatedViaCount = 0;
+    this.committedPushedViaRepairCount = 0;
+    this.padClearanceRerouteCount = 0;
+    this.traces = structuredClone(this.initialConnectivitySafeTraces);
+    this.obstacleIndex = new SpatialObstacleIndex(
+      this.inputProblem.simpleRouteJson,
+      this.traces,
+      undefined,
+      [],
+      this.connectionNameResolver,
+    );
+    this.remainingPadClearanceViolationCount =
+      this.countPadClearanceViolations();
+    this.remainingPadClearanceViolationCountByClearance =
+      this.countPadClearanceViolationsByTier();
+    this.finalizedMutatedTraceIndices = this.getMutatedTraceIndices();
+  }
+
+  private getMutatedTraceIndices() {
+    const count = Math.max(
+      this.initialConnectivitySafeTraces.length,
+      this.traces.length,
+    );
+    return Array.from({ length: count }, (_, traceIndex) => traceIndex).filter(
+      (traceIndex) =>
+        JSON.stringify(this.initialConnectivitySafeTraces[traceIndex]) !==
+        JSON.stringify(this.traces[traceIndex]),
+    );
+  }
+
   private createStats() {
     const candidate = this.candidates[this.candidateCursor];
+    const activeTraceIndices =
+      this.phase === "repair-vias"
+        ? this.viaRepairTraceIndices
+        : this.traceIndices;
     return {
       phase: this.phase,
       budgetLimited: this.budgetLimited,
       completionReason:
         this.phase !== "complete" && !this.solved
           ? null
-          : this.budgetLimited
-            ? "iteration_budget"
-            : "completed",
+          : this.connectivityRollbackCount > 0
+            ? "connectivity_rollback"
+            : this.budgetLimited
+              ? "iteration_budget"
+              : this.connectivityValidationError
+                ? "connectivity_validation_unavailable"
+                : "completed",
+      resultStatus:
+        this.connectivityRollbackCount > 0 ||
+        this.budgetLimited ||
+        this.connectivityValidationError !== null
+          ? "best_effort"
+          : "complete",
       traceCursor: this.traceCursor,
-      traceCount: this.traceIndices.length,
-      traceIndex: this.traceIndices[this.traceCursor],
+      traceCount: activeTraceIndices.length,
+      traceIndex: activeTraceIndices[this.traceCursor],
       routeCursor: this.routeCursor,
       candidateCursor: this.candidateCursor,
       candidateCount: this.candidates.length,
@@ -2188,17 +2344,32 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       remainingPadClearanceViolationCountByClearance: {
         ...this.remainingPadClearanceViolationCountByClearance,
       },
+      connectivityValidationCount: this.connectivityValidationCount,
+      connectivityRollbackCount: this.connectivityRollbackCount,
+      connectivityRegressionEndpointIds: [
+        ...this.connectivityRegressionEndpointIds,
+      ],
+      connectivityValidationError: this.connectivityValidationError,
+      connectivityRollbackMutationStats:
+        this.connectivityRollbackMutationStats === null
+          ? null
+          : { ...this.connectivityRollbackMutationStats },
+      mutatedTraceIndices: [...this.finalizedMutatedTraceIndices],
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }
 
   computeProgress() {
     if (this.solved || this.phase === "complete") return 1;
-    if (this.traceIndices.length === 0) return 1;
+    const activeTraceIndices =
+      this.phase === "repair-vias"
+        ? this.viaRepairTraceIndices
+        : this.traceIndices;
+    if (activeTraceIndices.length === 0) return 1;
     const phaseOffset = this.resumePhase === "scan-via-pairs" ? 0 : 0.5;
     return Math.min(
       0.99,
-      phaseOffset + (this.traceCursor / this.traceIndices.length) * 0.5,
+      phaseOffset + (this.traceCursor / activeTraceIndices.length) * 0.5,
     );
   }
 
@@ -2225,6 +2396,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     this.candidateShoveCount = 0;
     this.baseCandidateValidated = false;
     this.candidateSetMayUseGridFallback = false;
+    this.ensureConnectivitySafeOutput();
     this.obstacleIndex = new SpatialObstacleIndex(
       this.inputProblem.simpleRouteJson,
       this.traces,
@@ -2244,7 +2416,9 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   }
 
   override getOutput(): PowerTraceCleanupOutput {
-    return this.traces;
+    return structuredClone(
+      this.solved ? this.traces : this.initialConnectivitySafeTraces,
+    );
   }
 
   override visualize(): GraphicsObject {
