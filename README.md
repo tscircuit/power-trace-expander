@@ -74,7 +74,12 @@ emitted output. Opaque child routes are also compared byte-for-byte at those
 boundaries. Pre-existing via violations on immutable child traces are measured
 without being rewritten; the result is reported as `best_effort` with
 `initialImmutableViaViolationCount`, `remainingImmutableViaViolationCount`,
-and `skippedImmutableViaRepairCount` instead of claiming a DRC-clean board.
+`initialImmutableViaViolationPairCount`,
+`remainingImmutableViaViolationPairCount`, and
+`skippedImmutableViaRepairCount` instead of claiming a DRC-clean board. New
+violation pairs are compared by
+stable via, rule, and copper-object signatures, so repairing one old collision
+cannot hide a different collision introduced on the same via.
 
 The physical invariant covers same-net open circuits and new collisions with
 immutable vias. Candidate collision checks continue to enforce cross-net,

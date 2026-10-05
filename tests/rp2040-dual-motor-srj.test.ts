@@ -36,7 +36,7 @@ const connectionOwnsTrace = (
   );
 };
 
-const getViaViolationKeys = (
+const getViaViolationSignatures = (
   problem: SimpleRouteJson,
   traces: SimplifiedPcbTrace[],
   traceIndices: number[],
@@ -57,25 +57,28 @@ const getViaViolationKeys = (
     for (let routeIndex = 0; routeIndex < trace.route.length; routeIndex++) {
       const point = trace.route[routeIndex];
       if (point?.route_type !== "via") continue;
-      if (
-        index.collidesVia({
-          point,
-          layers: index.boardLayers,
-          padDiameter: point.via_diameter ?? 0.6,
-          holeDiameter: point.via_hole_diameter ?? index.defaultViaHoleDiameter,
-          connectionNames,
-          ignoreTraceIndex: traceIndex,
-          ignoreRouteRange: { start: routeIndex, end: routeIndex },
-          blockSameNetObstacles: true,
-          sameNetObstacleClearance: 0,
-        })
-      ) {
-        keys.add(`${trace.pcb_trace_id}:${routeIndex}`);
+      const viaId = `${trace.pcb_trace_id}:${routeIndex}`;
+      const signatures = index.getViaViolationSignatures({
+        point,
+        layers: index.boardLayers,
+        padDiameter: point.via_diameter ?? 0.6,
+        holeDiameter: point.via_hole_diameter ?? index.defaultViaHoleDiameter,
+        connectionNames,
+        ignoreTraceIndex: traceIndex,
+        ignoreRouteRange: { start: routeIndex, end: routeIndex },
+        blockSameNetObstacles: true,
+        sameNetObstacleClearance: 0,
+      });
+      for (const signature of signatures) {
+        keys.add(`${viaId}|${signature}`);
       }
     }
   }
   return keys;
 };
+
+const countViolatingVias = (signatures: Set<string>) =>
+  new Set([...signatures].map((signature) => signature.split("|")[0])).size;
 
 test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async () => {
   const problem = structuredClone(
@@ -91,7 +94,7 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   const immutableTraceIndices = inputTraces.flatMap((_, traceIndex) =>
     ownedTraceIndexSet.has(traceIndex) ? [] : [traceIndex],
   );
-  const inputImmutableViaViolationKeys = getViaViolationKeys(
+  const inputImmutableViaViolationKeys = getViaViolationSignatures(
     problem,
     inputTraces,
     immutableTraceIndices,
@@ -208,7 +211,10 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(solver.unresolvedViaCount).toBe(0);
   expect(solver.stats).toMatchObject({
     completionReason: "immutable_via_violations_preserved",
-    initialImmutableViaViolationCount: inputImmutableViaViolationKeys.size,
+    initialImmutableViaViolationCount: countViolatingVias(
+      inputImmutableViaViolationKeys,
+    ),
+    initialImmutableViaViolationPairCount: inputImmutableViaViolationKeys.size,
     immutableTraceMutationIds: [],
     immutableViaViolationRollbackCount: 0,
     resultStatus: "best_effort",
@@ -265,13 +271,13 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   for (const traceIndex of immutableTraceIndices) {
     expect(outputTraces[traceIndex]).toEqual(inputTraces[traceIndex]);
   }
-  const outputOwnedViaViolationKeys = getViaViolationKeys(
+  const outputOwnedViaViolationKeys = getViaViolationSignatures(
     problem,
     outputTraces,
     ownedTraceIndices,
   );
   expect(outputOwnedViaViolationKeys).toEqual(new Set());
-  const outputImmutableViaViolationKeys = getViaViolationKeys(
+  const outputImmutableViaViolationKeys = getViaViolationSignatures(
     problem,
     outputTraces,
     immutableTraceIndices,
@@ -280,8 +286,14 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
     expect(inputImmutableViaViolationKeys.has(violationKey)).toBe(true);
   }
   expect(solver.stats).toMatchObject({
-    remainingImmutableViaViolationCount: outputImmutableViaViolationKeys.size,
-    skippedImmutableViaRepairCount: outputImmutableViaViolationKeys.size,
+    remainingImmutableViaViolationCount: countViolatingVias(
+      outputImmutableViaViolationKeys,
+    ),
+    remainingImmutableViaViolationPairCount:
+      outputImmutableViaViolationKeys.size,
+    skippedImmutableViaRepairCount: countViolatingVias(
+      outputImmutableViaViolationKeys,
+    ),
   });
   // Core may reverse this route when it maps the solver result back to the
   // source trace. Cleanup must preserve the narrow boundary width so the
