@@ -178,6 +178,56 @@ test("treats separate same-net traces as connected copper", () => {
   expect(index.collides({ ...query, connectionNames: ["OTHER"] })).toBe(true);
 });
 
+test("rejects a reroute that removes an interior same-net pad junction", () => {
+  const input = structuredClone(simplifiedCases.straightClear);
+  input.obstacles = [
+    {
+      type: "rect",
+      obstacleId: "same-net-branch-pad",
+      center: { x: 0, y: 1 },
+      width: 2,
+      height: 1,
+      layers: ["top"],
+      connectedTo: ["POWER"],
+    },
+  ];
+  input.traces![0]!.route = [
+    testWire(-2, 0),
+    testWire(-0.5, 0),
+    testWire(0, 0.6),
+    testWire(0.5, 0),
+    testWire(2, 0),
+  ];
+  const solver = new PowerTraceExpanderSolver(input);
+  const internalSolver = solver as unknown as {
+    traceIndex: number;
+    rebuildObstacleIndex: () => void;
+    routeReplacementPreservesSameNetContacts: (
+      trace: (typeof solver.traces)[number],
+      interval: { startIndex: number; endIndex: number },
+      replacement: (typeof solver.traces)[number]["route"],
+    ) => boolean;
+  };
+  internalSolver.traceIndex = 0;
+  internalSolver.rebuildObstacleIndex();
+  const trace = solver.traces[0]!;
+
+  expect(
+    internalSolver.routeReplacementPreservesSameNetContacts(
+      trace,
+      { startIndex: 1, endIndex: 3 },
+      [trace.route[1]!, trace.route[3]!],
+    ),
+  ).toBe(false);
+  expect(
+    internalSolver.routeReplacementPreservesSameNetContacts(
+      trace,
+      { startIndex: 1, endIndex: 3 },
+      trace.route.slice(1, 4),
+    ),
+  ).toBe(true);
+});
+
 test("keeps port-aliased child routing while treating it as same-net copper", () => {
   const input = structuredClone(simplifiedCases.straightClear);
   input.connections[0]!.pointsToConnect[0] = {
@@ -189,12 +239,33 @@ test("keeps port-aliased child routing while treating it as same-net copper", ()
     type: "pcb_trace" as const,
     pcb_trace_id: "child-power-alias",
     connection_name: "CHILD_POWER_ALIAS",
-    connectsTo: ["shared_child_port"],
+    connectsTo: ["shared_child_port", "child_internal_port"],
     route: [
       {
         route_type: "wire" as const,
         x: -1,
         y: 1,
+        width: 0.15,
+        layer: "top" as const,
+      },
+      {
+        route_type: "wire" as const,
+        x: -0.5,
+        y: 1.4,
+        width: 0.15,
+        layer: "top" as const,
+      },
+      {
+        route_type: "wire" as const,
+        x: 0,
+        y: 1,
+        width: 0.15,
+        layer: "top" as const,
+      },
+      {
+        route_type: "wire" as const,
+        x: 0.5,
+        y: 1.4,
         width: 0.15,
         layer: "top" as const,
       },
@@ -215,6 +286,108 @@ test("keeps port-aliased child routing while treating it as same-net copper", ()
 
   expect(solver.solved).toBe(true);
   expect(solver.getOutput()[1]!.route).toEqual(originalChildRoute);
+  expect(
+    (solver.stats as { cleanupMutatedTraceIndices: number[] })
+      .cleanupMutatedTraceIndices,
+  ).not.toContain(1);
+  expect(solver.stats).toMatchObject({ immutableTraceMutationIds: [] });
+});
+
+test("final acceptance rolls back an opaque child mutation", () => {
+  const input = structuredClone(simplifiedCases.straightClear);
+  input.traces!.push({
+    type: "pcb_trace",
+    pcb_trace_id: "opaque-child",
+    connection_name: "CHILD",
+    connectsTo: ["child-left", "child-right"],
+    route: [testWire(-1, 2), testWire(0, 2.5), testWire(1, 2)],
+  });
+  const solver = new PowerTraceExpanderSolver(input);
+  const original = structuredClone(solver.getOutput());
+  const candidate = structuredClone(solver.traces);
+  candidate[1]!.route = [testWire(-1, 2), testWire(1, 2)];
+  const internalSolver = solver as unknown as {
+    acceptConnectivityCheckpoint: (
+      traces: typeof candidate,
+      phase: "final",
+    ) => boolean;
+  };
+
+  expect(internalSolver.acceptConnectivityCheckpoint(candidate, "final")).toBe(
+    false,
+  );
+  expect(solver.getOutput()).toEqual(original);
+  expect(solver.immutableTraceMutationIds).toEqual(["opaque-child"]);
+  expect(solver.connectivityRollbackPhases).toContain("final");
+});
+
+test("final acceptance rejects a new collision with an immutable via", () => {
+  const input = structuredClone(simplifiedCases.straightClear);
+  input.connections[0]!.pointsToConnect = [
+    { x: -2, y: 2, layer: "top" },
+    { x: 2, y: 2, layer: "top" },
+  ];
+  input.traces![0]!.route = [testWire(-2, 2), testWire(2, 2)];
+  input.traces!.push({
+    type: "pcb_trace",
+    pcb_trace_id: "opaque-via",
+    connection_name: "CHILD",
+    route: [
+      testWire(0, 0),
+      {
+        route_type: "via",
+        x: 0,
+        y: 0,
+        from_layer: "top",
+        to_layer: "bottom",
+        via_diameter: 0.6,
+        via_hole_diameter: 0.3,
+      },
+      { ...testWire(0, 0), layer: "bottom" },
+      { ...testWire(1, 0), layer: "bottom" },
+    ],
+  });
+  const solver = new PowerTraceExpanderSolver(input);
+  const original = structuredClone(solver.getOutput());
+  const candidate = structuredClone(solver.traces);
+  candidate[0]!.route = [
+    testWire(-2, 2),
+    testWire(-1, 0),
+    testWire(1, 0),
+    testWire(2, 2),
+  ];
+  const internalSolver = solver as unknown as {
+    acceptConnectivityCheckpoint: (
+      traces: typeof candidate,
+      phase: "final",
+    ) => boolean;
+  };
+
+  expect(solver.initialImmutableViaViolationCount).toBe(0);
+  expect(internalSolver.acceptConnectivityCheckpoint(candidate, "final")).toBe(
+    false,
+  );
+  expect(solver.getOutput()).toEqual(original);
+  expect(solver.immutableViaViolationRollbackCount).toBe(1);
+  expect(solver.immutableViaViolationRegressionIds).toEqual(["opaque-via:1"]);
+});
+
+test("keeps an unowned child blocker immutable during local inflation", () => {
+  const input = structuredClone(simplifiedCases.inflationPushesSignal);
+  input.connections = input.connections.filter(
+    (connection) => connection.name !== "SIGNAL",
+  );
+  const childTrace = input.traces?.[1];
+  if (!childTrace) throw new Error("Expected a blocking child trace");
+  childTrace.connection_name = "CHILD_SIGNAL";
+  const originalChildRoute = structuredClone(childTrace.route);
+
+  const solver = new PowerTraceExpanderSolver(input);
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.getOutput()[1]?.route).toEqual(originalChildRoute);
+  expect(solver.pushedTraceCount).toBe(0);
 });
 
 test("validates widened route-point transitions conservatively", () => {
@@ -549,21 +722,32 @@ test("targeted mode uses aliases, forwards through the autorouter, and measures 
   expect(autorouterOutput[1]).toEqual(originalBackground);
 });
 
-test("autorouter adapter emits a tscircuit-compatible complete event", () => {
+test("targeted mode can move and final-repair an owned nearby blocker", () => {
+  const input = structuredClone(simplifiedCases.inflationPushesSignal);
+  const originalSignalRoute = structuredClone(input.traces?.[1]?.route);
+  const solver = new PowerTraceExpanderSolver(input, {
+    onlyConnectionNames: ["POWER"],
+  });
+
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.pushedTraceCount).toBeGreaterThan(0);
+  expect(solver.getOutput()[1]?.route).not.toEqual(originalSignalRoute);
+  expect(solver.stats.expansionPushedTraceIndices).toContain(1);
+  expect(solver.unresolvedSegmentCount).toBe(0);
+});
+
+test("autorouter adapter emits a tscircuit-compatible complete event", async () => {
   const autorouter = new PowerTraceExpanderAutorouter(
     structuredClone(centralObstacleFixture),
   );
-  let completedTraceCount = 0;
-  let error: Error | undefined;
-  autorouter.on("complete", ({ traces }) => {
-    completedTraceCount = traces.length;
-  });
-  autorouter.on("error", (event) => {
-    error = event.error;
+  const completed = new Promise<number>((resolve, reject) => {
+    autorouter.on("complete", ({ traces }) => resolve(traces.length));
+    autorouter.on("error", (event) => reject(event.error));
   });
 
   autorouter.start();
 
-  expect(error).toBeUndefined();
-  expect(completedTraceCount).toBe(1);
+  expect(await completed).toBe(1);
 });
