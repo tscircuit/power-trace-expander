@@ -4,6 +4,7 @@ import {
   capturePhysicalConnectivity,
   PhysicalConnectivityInvariant,
 } from "../src/PhysicalConnectivityInvariant";
+import { PowerTraceExpanderSolver } from "../src/PowerTraceExpanderSolver";
 import type {
   PowerTraceExpanderInput,
   SimplifiedPcbTrace,
@@ -177,6 +178,34 @@ test("netConnectionName resolves into the connection's single canonical net", ()
   expect(invariant.baseline.endpointComponents).toEqual([["0:0", "0:1"]]);
   expect(validation.candidate.endpointComponents).toEqual([["0:0", "0:1"]]);
   expect(validation.safe).toBe(true);
+});
+
+test("the full expander owns and widens a netConnectionName trace", () => {
+  const input = baseProblem([
+    { x: -1, y: 0, layer: "top", pointId: "left" },
+    { x: 1, y: 0, layer: "top", pointId: "right" },
+  ]);
+  input.nominalTraceWidth = 0.8;
+  input.connections[0]!.name = "logical-connection";
+  input.connections[0]!.netConnectionName = "canonical-net";
+  input.connections[0]!.nominalTraceWidth = 0.8;
+  input.traces = [
+    trace("net-alias", [wire(-1, 0, 0.2), wire(1, 0, 0.2)], "canonical-net"),
+  ];
+
+  const solver = new PowerTraceExpanderSolver(input);
+  solver.solve();
+  const output = solver.getOutput();
+  const outputWireWidths = output[0]?.route
+    .filter((point) => point.route_type === "wire")
+    .map((point) => point.width);
+
+  expect(outputWireWidths?.length).toBeGreaterThan(1);
+  expect(outputWireWidths?.every((width) => width === 0.8)).toBe(true);
+  expect(solver.stats).toMatchObject({
+    resultStatus: "complete",
+    nominalTraceWidth: 0.8,
+  });
 });
 
 test("uses the upstream position-layer alias when explicit net IDs differ", () => {
@@ -411,4 +440,73 @@ test("legal non-circular ellipses fail closed without crashing", () => {
   expect(validation.validationError).toContain(
     "does not yet support non-circular oval obstacle ellipse",
   );
+
+  const solver = new PowerTraceExpanderSolver(input);
+  solver.solve();
+  expect(solver.solved).toBe(true);
+  expect(solver.getOutput()).toEqual(baseline);
+  expect(solver.stats).toMatchObject({
+    resultStatus: "best_effort",
+    completionReason: "connectivity_rollback",
+    connectivityRollbackPhases: ["expansion"],
+    recreatedTraceCount: 0,
+    expandedSegmentCount: 0,
+    connectivityRollbackMutationStats: {
+      recreatedTraceCount: 1,
+      expandedSegmentCount: 3,
+    },
+    discardedExpansionMutationStats: null,
+  });
+});
+
+test("an unchanged unsupported baseline is surfaced as best effort", () => {
+  const input = baseProblem([
+    { x: -1, y: 0, layer: "top", pointId: "left" },
+    { x: 1, y: 0, layer: "top", pointId: "right" },
+  ]);
+  input.obstacles = [
+    {
+      type: "oval",
+      obstacleId: "ellipse",
+      center: { x: 0, y: 0 },
+      width: 2,
+      height: 1,
+      layers: ["top"],
+      connectedTo: ["NET"],
+    },
+  ];
+  const baseline = [trace("ellipse-trace", [wire(-1, 0), wire(1, 0)])];
+  input.traces = structuredClone(baseline);
+
+  const solver = new PowerTraceExpanderSolver(input);
+  solver.solve();
+
+  expect(solver.getOutput()).toEqual(baseline);
+  expect(solver.stats).toMatchObject({
+    resultStatus: "best_effort",
+    completionReason: "connectivity_validation_unavailable",
+    connectivityRollbackCount: 0,
+  });
+  expect(solver.stats.connectivityValidationError).toContain(
+    "does not yet support non-circular oval obstacle ellipse",
+  );
+});
+
+test("completed solver output cannot mutate the validated checkpoint", () => {
+  const input = baseProblem([
+    { x: -1, y: 0, layer: "top", pointId: "left" },
+    { x: 1, y: 0, layer: "top", pointId: "right" },
+  ]);
+  input.traces = [trace("safe", [wire(-1, 0), wire(1, 0)])];
+  const solver = new PowerTraceExpanderSolver(input);
+  solver.solve();
+
+  const firstOutput = solver.getOutput();
+  const firstWire = firstOutput[0]?.route[0];
+  if (firstWire?.route_type !== "wire") throw new Error("Expected a wire");
+  firstWire.x = 42;
+
+  const secondOutput = solver.getOutput();
+  expect(secondOutput).not.toBe(firstOutput);
+  expect(secondOutput[0]?.route[0]).toMatchObject({ x: -1 });
 });
