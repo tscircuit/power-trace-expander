@@ -206,6 +206,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private layerAttempt: LayerRouteAttempt | null = null;
   private pendingLayerOutput: LayerGridRouteOutput | null = null;
   private pendingLayerPushCount = 0;
+  private statsMaxIterations = 0;
 
   declare activeSubSolver:
     | ObstacleAwareGridRouteSolver
@@ -321,8 +322,17 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return;
     }
     if (this.activeSubSolver) {
+      const solver = this.activeSubSolver;
       this.stepActiveGridSolver();
-      this.stats = this.createStats();
+      // Unfinished children only change their own state. Keep the parent's
+      // snapshot until their result is adopted or its public budget changes.
+      if (
+        solver.solved ||
+        solver.failed ||
+        this.MAX_ITERATIONS !== this.statsMaxIterations
+      ) {
+        this.stats = this.createStats();
+      }
       return;
     }
 
@@ -2795,6 +2805,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private createStats() {
+    this.statsMaxIterations = this.MAX_ITERATIONS;
     return {
       phase: this.phase,
       pass: this.passIndex + 1,

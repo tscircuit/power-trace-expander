@@ -296,8 +296,10 @@ export class PowerTraceCleanupSolver extends BaseSolver {
 
   override _step() {
     if (this.activeSubSolver) {
+      const solver = this.activeSubSolver;
       this.stepActiveShoveSolver();
-      this.stats = this.createStats();
+      // Child searches do not change this solver's reported cleanup state.
+      if (solver.solved || solver.failed) this.stats = this.createStats();
       return;
     }
 
