@@ -119,8 +119,10 @@ export class LocalTraceInflationSolver extends BaseSolver {
 
   override _step() {
     if (this.activeSubSolver) {
+      const solver = this.activeSubSolver;
       this.stepActiveSubSolver();
-      this.stats = this.createStats();
+      // Child searches do not change this solver's reported inflation state.
+      if (solver.solved || solver.failed) this.stats = this.createStats();
       return;
     }
 
