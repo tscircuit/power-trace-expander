@@ -9,9 +9,9 @@ import type { CollisionQuery } from "../src/types";
 class CountingConnectionNameResolver extends ConnectionNameResolver {
   readonly callsByAliases = new Map<string[], number>();
 
-  override canonicalize(names: string[]): string[] {
+  override canonicalizeToSet(names: string[]): ReadonlySet<string> {
     this.callsByAliases.set(names, (this.callsByAliases.get(names) ?? 0) + 1);
-    return super.canonicalize(names);
+    return super.canonicalizeToSet(names);
   }
 }
 
