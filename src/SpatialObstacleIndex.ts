@@ -99,10 +99,20 @@ export class SpatialObstacleIndex {
       this.defaultViaHoleDiameter,
     );
     this.connectionNameResolver = connectionNameResolver;
-    this.connectionNameSets = this.items.map(
-      (item) =>
-        new Set(connectionNameResolver.canonicalize(item.connectionNames)),
-    );
+    // All rectangles for a trace or obstacle share the same alias array.
+    // Resolve it once per index build, rather than once per rectangle. Keep
+    // the cache local so later builds observe changes to aliases or nets.
+    const connectionNameSets = new Map<string[], ReadonlySet<string>>();
+    this.connectionNameSets = this.items.map((item) => {
+      let names = connectionNameSets.get(item.connectionNames);
+      if (!names) {
+        names = new Set(
+          connectionNameResolver.canonicalize(item.connectionNames),
+        );
+        connectionNameSets.set(item.connectionNames, names);
+      }
+      return names;
+    });
     this.connectedPads = simpleRouteJson.obstacles.flatMap((obstacle) => {
       if (
         !obstacle.connectedTo.some(
