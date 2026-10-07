@@ -33,7 +33,7 @@
     "graphics-debug": "^0.0.96"
   },
   "peerDependencies": {
-    "@tscircuit/core": ">=0.0.337 <0.1.0",
+    "@tscircuit/core": ">=0.0.1737 <0.1.0",
     "typescript": "^5"
   },
   "overrides": {
@@ -42,7 +42,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.4",
     "@tscircuit/capacity-autorouter": "0.0.705",
-    "@tscircuit/core": "^0.0.1470",
+    "@tscircuit/core": "0.0.1737",
     "@types/bun": "latest",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

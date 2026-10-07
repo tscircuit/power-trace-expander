@@ -2363,9 +2363,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         const isCurrent =
           traceIndex === this.traceIndex &&
           routeIndex === this.routeSegmentIndex;
-        const meetsWidth =
-          start.width >= nominalWidth - WIDTH_EPSILON &&
-          end.width >= nominalWidth - WIDTH_EPSILON;
+        const meetsWidth = start.width >= nominalWidth - WIDTH_EPSILON;
         const isBottom = start.layer === "bottom";
         lines.push({
           points: [start, end],
@@ -2378,7 +2376,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
               : isBottom
                 ? "#8b4bb8"
                 : "#cc3344",
-          strokeWidth: Math.max(start.width, end.width),
+          strokeWidth: start.width,
         });
       }
     }
