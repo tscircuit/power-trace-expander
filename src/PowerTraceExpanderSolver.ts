@@ -200,249 +200,6 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   connectivityRollbackMutationStats: Record<string, number> | null = null;
   discardedExpansionMutationStats: Record<string, number> | null = null;
 
-  private discardInFlightExpansion() {
-    this.discardedExpansionMutationStats =
-      this.captureAndResetExpansionMutationStats();
-    this.restoreLastAcceptedTraces();
-  }
-
-  private rollbackConnectivityRegressedExpansion() {
-    this.connectivityRollbackMutationStats =
-      this.captureAndResetExpansionMutationStats();
-    this.restoreLastAcceptedTraces();
-  }
-
-  private restoreLastAcceptedTraces() {
-    this.traces = structuredClone(this.lastAcceptedTraces);
-    this.rebuildObstacleIndex();
-  }
-
-  private createLayerRouteReplacement(output: LayerGridRouteOutput) {
-    const trace = this.traces[this.traceIndex]!;
-    const interval = this.layerAttempt!.interval;
-    const originalStart = trace.route[interval.startIndex] as WireRoutePoint;
-    const originalEnd = trace.route[interval.endIndex] as WireRoutePoint;
-    const replacement = structuredClone(output.route);
-    const firstWireIndex = replacement.findIndex(
-      (point) => point.route_type === "wire",
-    );
-    let lastWireIndex = -1;
-    for (let index = replacement.length - 1; index >= 0; index--) {
-      if (replacement[index]?.route_type === "wire") {
-        lastWireIndex = index;
-        break;
-      }
-    }
-    if (firstWireIndex >= 0) {
-      replacement[firstWireIndex] = {
-        ...originalStart,
-        ...replacement[firstWireIndex],
-      } as WireRoutePoint;
-    }
-    if (lastWireIndex >= 0) {
-      replacement[lastWireIndex] = {
-        ...originalEnd,
-        ...replacement[lastWireIndex],
-      } as WireRoutePoint;
-    }
-    return replacement;
-  }
-
-  private layerRoutePreservesSameNetContacts(output: LayerGridRouteOutput) {
-    const trace = this.traces[this.traceIndex]!;
-    const interval = this.layerAttempt!.interval;
-    return this.routeReplacementPreservesSameNetContacts(
-      trace,
-      interval,
-      this.createLayerRouteReplacement(output),
-    );
-  }
-
-  private createGridRouteReplacement(output: GridRouteOutput) {
-    const trace = this.traces[this.traceIndex]!;
-    const interval = this.currentIntervals[this.intervalCursor]!;
-    const startPoint = trace.route[interval.startIndex] as WireRoutePoint;
-    const endPoint = trace.route[interval.endIndex] as WireRoutePoint;
-    const replacement: WireRoutePoint[] = output.points.map((point) => ({
-      route_type: "wire",
-      x: point.x,
-      y: point.y,
-      width: output.traceWidth,
-      layer: startPoint.layer,
-    }));
-    replacement[0]!.width = Math.max(startPoint.width, output.traceWidth);
-    replacement[replacement.length - 1]!.width = Math.max(
-      endPoint.width,
-      output.traceWidth,
-    );
-    return replacement;
-  }
-
-  private gridRoutePreservesSameNetContacts(output: GridRouteOutput) {
-    const trace = this.traces[this.traceIndex]!;
-    const interval = this.currentIntervals[this.intervalCursor]!;
-    return this.routeReplacementPreservesSameNetContacts(
-      trace,
-      interval,
-      this.createGridRouteReplacement(output),
-    );
-  }
-
-  private routeReplacementPreservesSameNetContacts(
-    trace: SimplifiedPcbTrace,
-    interval: RouteInterval,
-    replacement: SimplifiedPcbTrace["route"],
-  ) {
-    const connectionNames = this.getTraceConnectionNames(trace);
-    const originalIntervalContacts = this.getSameNetContactIds(
-      trace.route.slice(interval.startIndex, interval.endIndex + 1),
-      connectionNames,
-      this.traceIndex,
-    );
-    const contactsOutsideInterval = new Set([
-      ...this.getSameNetContactIds(
-        trace.route.slice(0, interval.startIndex + 1),
-        connectionNames,
-        this.traceIndex,
-      ),
-      ...this.getSameNetContactIds(
-        trace.route.slice(interval.endIndex),
-        connectionNames,
-        this.traceIndex,
-      ),
-    ]);
-    const requiredContacts = new Set(
-      [...originalIntervalContacts].filter(
-        (contactId) => !contactsOutsideInterval.has(contactId),
-      ),
-    );
-    if (requiredContacts.size === 0) return true;
-    const replacementContacts = this.getSameNetContactIds(
-      replacement,
-      connectionNames,
-      this.traceIndex,
-    );
-    return [...requiredContacts].every((contactId) =>
-      replacementContacts.has(contactId),
-    );
-  }
-
-  private sameNetContactsArePreserved(
-    before: SimplifiedPcbTrace["route"],
-    after: SimplifiedPcbTrace["route"],
-    connectionNames: string[],
-    ignoreTraceIndex: number,
-  ) {
-    const beforeContacts = this.getSameNetContactIds(
-      before,
-      connectionNames,
-      ignoreTraceIndex,
-    );
-    if (beforeContacts.size === 0) return true;
-    const afterContacts = this.getSameNetContactIds(
-      after,
-      connectionNames,
-      ignoreTraceIndex,
-    );
-    return [...beforeContacts].every((contactId) =>
-      afterContacts.has(contactId),
-    );
-  }
-
-  private getSameNetContactIds(
-    route: SimplifiedPcbTrace["route"],
-    connectionNames: string[],
-    ignoreTraceIndex: number,
-  ) {
-    const contactIds = new Set<string>();
-    for (let index = 0; index < route.length; index++) {
-      const point = route[index];
-      if (point?.route_type === "via") {
-        for (const layer of this.getViaLayers(point)) {
-          for (const contactId of this.obstacleIndex.getSameNetCopperContactIds(
-            {
-              start: point,
-              end: point,
-              layer,
-              width: point.via_diameter ?? 0.6,
-              connectionNames,
-              ignoreTraceIndex,
-            },
-          )) {
-            contactIds.add(contactId);
-          }
-        }
-        continue;
-      }
-      const next = route[index + 1];
-      if (
-        point?.route_type !== "wire" ||
-        next?.route_type !== "wire" ||
-        point.layer !== next.layer
-      ) {
-        continue;
-      }
-      for (const contactId of this.obstacleIndex.getSameNetCopperContactIds({
-        start: point,
-        end: next,
-        layer: point.layer,
-        width: Math.min(point.width, next.width),
-        connectionNames,
-        ignoreTraceIndex,
-      })) {
-        contactIds.add(contactId);
-      }
-    }
-    return contactIds;
-  }
-
-  private getViaLayers(via: ViaRoutePoint) {
-    const fromIndex = this.obstacleIndex.boardLayers.indexOf(via.from_layer);
-    const toIndex = this.obstacleIndex.boardLayers.indexOf(via.to_layer);
-    if (fromIndex < 0 || toIndex < 0) return this.obstacleIndex.boardLayers;
-    return this.obstacleIndex.boardLayers.slice(
-      Math.min(fromIndex, toIndex),
-      Math.max(fromIndex, toIndex) + 1,
-    );
-  }
-  private acceptConnectivityCheckpoint(
-    candidateTraces: SimplifiedPcbTrace[],
-    phase: OwnershipCheckpointPhase,
-  ) {
-    this.connectivityValidationCount++;
-    try {
-      const validation = this.connectivityInvariant.validate(candidateTraces);
-      this.connectivityValidationError ??= validation.validationError ?? null;
-      if (validation.safe) {
-        if (!this.acceptOwnershipCheckpoint(candidateTraces, phase))
-          return false;
-        // Later phases must preserve connectivity gained by an accepted phase.
-        this.connectivityInvariant = new PhysicalConnectivityInvariant(
-          this.inputProblem,
-          this.lastAcceptedTraces,
-        );
-        return true;
-      }
-      this.connectivityRegressionEndpointIds = [
-        ...new Set([
-          ...this.connectivityRegressionEndpointIds,
-          ...validation.regressions.flatMap(
-            (regression) => regression.baselineEndpointLabels,
-          ),
-        ]),
-      ];
-    } catch (error) {
-      this.connectivityValidationError =
-        error instanceof Error ? error.message : String(error);
-    }
-    this.connectivityRollbackCount++;
-    if (!this.connectivityRollbackPhases.includes(phase))
-      this.connectivityRollbackPhases.push(phase);
-    if (phase === "expansion") this.rollbackConnectivityRegressedExpansion();
-    else this.restoreLastAcceptedTraces();
-    return false;
-  }
-
   constructor(
     inputProblem: PowerTraceExpanderInput,
     options: PowerTraceExpanderOptions = {},
@@ -711,6 +468,23 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.layerAttempt = null;
     this.discardInFlightExpansion();
     this.startCleanup();
+  }
+
+  private discardInFlightExpansion() {
+    this.discardedExpansionMutationStats =
+      this.captureAndResetExpansionMutationStats();
+    this.restoreLastAcceptedTraces();
+  }
+
+  private rollbackConnectivityRegressedExpansion() {
+    this.connectivityRollbackMutationStats =
+      this.captureAndResetExpansionMutationStats();
+    this.restoreLastAcceptedTraces();
+  }
+
+  private restoreLastAcceptedTraces() {
+    this.traces = structuredClone(this.lastAcceptedTraces);
+    this.rebuildObstacleIndex();
   }
 
   private getRemainingParentIterationsAfterCurrentStep() {
@@ -1765,6 +1539,47 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.phase = "evaluate-segment";
   }
 
+  private createLayerRouteReplacement(output: LayerGridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.layerAttempt!.interval;
+    const originalStart = trace.route[interval.startIndex] as WireRoutePoint;
+    const originalEnd = trace.route[interval.endIndex] as WireRoutePoint;
+    const replacement = structuredClone(output.route);
+    const firstWireIndex = replacement.findIndex(
+      (point) => point.route_type === "wire",
+    );
+    let lastWireIndex = -1;
+    for (let index = replacement.length - 1; index >= 0; index--) {
+      if (replacement[index]?.route_type === "wire") {
+        lastWireIndex = index;
+        break;
+      }
+    }
+    if (firstWireIndex >= 0) {
+      replacement[firstWireIndex] = {
+        ...originalStart,
+        ...replacement[firstWireIndex],
+      } as WireRoutePoint;
+    }
+    if (lastWireIndex >= 0) {
+      replacement[lastWireIndex] = {
+        ...originalEnd,
+        ...replacement[lastWireIndex],
+      } as WireRoutePoint;
+    }
+    return replacement;
+  }
+
+  private layerRoutePreservesSameNetContacts(output: LayerGridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.layerAttempt!.interval;
+    return this.routeReplacementPreservesSameNetContacts(
+      trace,
+      interval,
+      this.createLayerRouteReplacement(output),
+    );
+  }
+
   private startTraceInflation(trace: SimplifiedPcbTrace, segmentIndex: number) {
     const segmentStart = trace.route[segmentIndex];
     const segmentEnd = trace.route[segmentIndex + 1];
@@ -2046,6 +1861,154 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.routeSegmentIndex = interval.startIndex + replacement.length - 1;
     this.currentIntervals = [];
     this.phase = "evaluate-segment";
+  }
+
+  private createGridRouteReplacement(output: GridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.currentIntervals[this.intervalCursor]!;
+    const startPoint = trace.route[interval.startIndex] as WireRoutePoint;
+    const endPoint = trace.route[interval.endIndex] as WireRoutePoint;
+    const replacement: WireRoutePoint[] = output.points.map((point) => ({
+      route_type: "wire",
+      x: point.x,
+      y: point.y,
+      width: output.traceWidth,
+      layer: startPoint.layer,
+    }));
+    replacement[0]!.width = Math.max(startPoint.width, output.traceWidth);
+    replacement[replacement.length - 1]!.width = Math.max(
+      endPoint.width,
+      output.traceWidth,
+    );
+    return replacement;
+  }
+
+  private gridRoutePreservesSameNetContacts(output: GridRouteOutput) {
+    const trace = this.traces[this.traceIndex]!;
+    const interval = this.currentIntervals[this.intervalCursor]!;
+    return this.routeReplacementPreservesSameNetContacts(
+      trace,
+      interval,
+      this.createGridRouteReplacement(output),
+    );
+  }
+
+  private routeReplacementPreservesSameNetContacts(
+    trace: SimplifiedPcbTrace,
+    interval: RouteInterval,
+    replacement: SimplifiedPcbTrace["route"],
+  ) {
+    const connectionNames = this.getTraceConnectionNames(trace);
+    const originalIntervalContacts = this.getSameNetContactIds(
+      trace.route.slice(interval.startIndex, interval.endIndex + 1),
+      connectionNames,
+      this.traceIndex,
+    );
+    const contactsOutsideInterval = new Set([
+      ...this.getSameNetContactIds(
+        trace.route.slice(0, interval.startIndex + 1),
+        connectionNames,
+        this.traceIndex,
+      ),
+      ...this.getSameNetContactIds(
+        trace.route.slice(interval.endIndex),
+        connectionNames,
+        this.traceIndex,
+      ),
+    ]);
+    const requiredContacts = new Set(
+      [...originalIntervalContacts].filter(
+        (contactId) => !contactsOutsideInterval.has(contactId),
+      ),
+    );
+    if (requiredContacts.size === 0) return true;
+    const replacementContacts = this.getSameNetContactIds(
+      replacement,
+      connectionNames,
+      this.traceIndex,
+    );
+    return [...requiredContacts].every((contactId) =>
+      replacementContacts.has(contactId),
+    );
+  }
+
+  private sameNetContactsArePreserved(
+    before: SimplifiedPcbTrace["route"],
+    after: SimplifiedPcbTrace["route"],
+    connectionNames: string[],
+    ignoreTraceIndex: number,
+  ) {
+    const beforeContacts = this.getSameNetContactIds(
+      before,
+      connectionNames,
+      ignoreTraceIndex,
+    );
+    if (beforeContacts.size === 0) return true;
+    const afterContacts = this.getSameNetContactIds(
+      after,
+      connectionNames,
+      ignoreTraceIndex,
+    );
+    return [...beforeContacts].every((contactId) =>
+      afterContacts.has(contactId),
+    );
+  }
+
+  private getSameNetContactIds(
+    route: SimplifiedPcbTrace["route"],
+    connectionNames: string[],
+    ignoreTraceIndex: number,
+  ) {
+    const contactIds = new Set<string>();
+    for (let index = 0; index < route.length; index++) {
+      const point = route[index];
+      if (point?.route_type === "via") {
+        for (const layer of this.getViaLayers(point)) {
+          for (const contactId of this.obstacleIndex.getSameNetCopperContactIds(
+            {
+              start: point,
+              end: point,
+              layer,
+              width: point.via_diameter ?? 0.6,
+              connectionNames,
+              ignoreTraceIndex,
+            },
+          )) {
+            contactIds.add(contactId);
+          }
+        }
+        continue;
+      }
+      const next = route[index + 1];
+      if (
+        point?.route_type !== "wire" ||
+        next?.route_type !== "wire" ||
+        point.layer !== next.layer
+      ) {
+        continue;
+      }
+      for (const contactId of this.obstacleIndex.getSameNetCopperContactIds({
+        start: point,
+        end: next,
+        layer: point.layer,
+        width: Math.min(point.width, next.width),
+        connectionNames,
+        ignoreTraceIndex,
+      })) {
+        contactIds.add(contactId);
+      }
+    }
+    return contactIds;
+  }
+
+  private getViaLayers(via: ViaRoutePoint) {
+    const fromIndex = this.obstacleIndex.boardLayers.indexOf(via.from_layer);
+    const toIndex = this.obstacleIndex.boardLayers.indexOf(via.to_layer);
+    if (fromIndex < 0 || toIndex < 0) return this.obstacleIndex.boardLayers;
+    return this.obstacleIndex.boardLayers.slice(
+      Math.min(fromIndex, toIndex),
+      Math.max(fromIndex, toIndex) + 1,
+    );
   }
 
   private gridRouteReplacementCollides(output: GridRouteOutput) {
@@ -2570,6 +2533,43 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     }
     this.traces = structuredClone(this.lastAcceptedTraces);
     this.rebuildObstacleIndex();
+    return false;
+  }
+  private acceptConnectivityCheckpoint(
+    candidateTraces: SimplifiedPcbTrace[],
+    phase: OwnershipCheckpointPhase,
+  ) {
+    this.connectivityValidationCount++;
+    try {
+      const validation = this.connectivityInvariant.validate(candidateTraces);
+      this.connectivityValidationError ??= validation.validationError ?? null;
+      if (validation.safe) {
+        if (!this.acceptOwnershipCheckpoint(candidateTraces, phase))
+          return false;
+        // Later phases must preserve connectivity gained by an accepted phase.
+        this.connectivityInvariant = new PhysicalConnectivityInvariant(
+          this.inputProblem,
+          this.lastAcceptedTraces,
+        );
+        return true;
+      }
+      this.connectivityRegressionEndpointIds = [
+        ...new Set([
+          ...this.connectivityRegressionEndpointIds,
+          ...validation.regressions.flatMap(
+            (regression) => regression.baselineEndpointLabels,
+          ),
+        ]),
+      ];
+    } catch (error) {
+      this.connectivityValidationError =
+        error instanceof Error ? error.message : String(error);
+    }
+    this.connectivityRollbackCount++;
+    if (!this.connectivityRollbackPhases.includes(phase))
+      this.connectivityRollbackPhases.push(phase);
+    if (phase === "expansion") this.rollbackConnectivityRegressedExpansion();
+    else this.restoreLastAcceptedTraces();
     return false;
   }
 

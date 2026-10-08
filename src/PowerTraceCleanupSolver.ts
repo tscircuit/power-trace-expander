@@ -179,6 +179,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private readonly mutableTraceIndices: number[];
   private readonly mutableTraceIndexSet: Set<number>;
   private readonly viaRepairTraceIndices: number[];
+  private finalizedMutatedTraceIndices: number[] = [];
   private readonly traceIndices: number[];
   private readonly maxRerouteLength: number;
   private readonly clearancePaddingTiers: number[];
@@ -195,7 +196,6 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private alternatePushedViaRepairs: PushedViaRepair[] = [];
   private pushedViaRepairRollbackTraces: SimplifiedPcbTrace[] | null = null;
   private connectivityFinalized = false;
-  private finalizedMutatedTraceIndices: number[] = [];
   private resumePhase: Exclude<
     CleanupPhase,
     "evaluate-candidate" | "shove-clearance" | "complete"
@@ -2212,7 +2212,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       const validation = this.connectivityInvariant.validate(this.traces);
       this.connectivityValidationError ??= validation.validationError ?? null;
       if (validation.safe) {
-        this.finalizedMutatedTraceIndices = this.getMutatedTraceIndices();
+        this.finalizeMutationIndices();
         return;
       }
       this.connectivityRegressionEndpointIds = [
@@ -2260,15 +2260,15 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.countPadClearanceViolations();
     this.remainingPadClearanceViolationCountByClearance =
       this.countPadClearanceViolationsByTier();
-    this.finalizedMutatedTraceIndices = this.getMutatedTraceIndices();
+    this.finalizeMutationIndices();
   }
 
-  private getMutatedTraceIndices() {
-    const count = Math.max(this.initialTraces.length, this.traces.length);
-    return Array.from({ length: count }, (_, traceIndex) => traceIndex).filter(
-      (traceIndex) =>
-        JSON.stringify(this.initialTraces[traceIndex]) !==
-        JSON.stringify(this.traces[traceIndex]),
+  private finalizeMutationIndices() {
+    this.finalizedMutatedTraceIndices = this.traces.flatMap(
+      (trace, traceIndex) =>
+        JSON.stringify(this.initialTraces[traceIndex]) === JSON.stringify(trace)
+          ? []
+          : [traceIndex],
     );
   }
 
