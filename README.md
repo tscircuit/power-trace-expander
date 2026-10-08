@@ -65,6 +65,10 @@ Sharing one or more physical-net aliases is not treated as mutation ownership:
 only traces with a directly declared connection in the current SRJ may be
 expanded, cleaned up, relocated, or locally shoved.
 
+Physical copper contact and terminal-component capture are provided by
+`circuit-json-to-connectivity-map`. This solver resolves its SRJ aliases before
+calling that shared geometry API and owns the validation and rollback policy.
+
 Every expansion, cleanup, clearance-repair, and final-acceptance boundary is
 validated against the last physical-connectivity-safe trace snapshot. An output
 may merge terminal components, but it may not split a component that was
