@@ -4,6 +4,7 @@ import "graphics-debug/matcher";
 import { cleanupCases } from "../fixtures/cleanup-cases";
 import { simplifiedCases } from "../fixtures/simplified-cases";
 import {
+  measureTraceWidths,
   PowerTraceCleanupSolver,
   PowerTraceClearanceRepairSolver,
   PowerTraceExpanderSolver,
@@ -280,6 +281,10 @@ test("owns traces declared through netConnectionName", () => {
   input.connections[0]!.netConnectionName = "canonical-net";
   input.connections[0]!.nominalTraceWidth = 0.8;
   input.traces![0]!.connection_name = "canonical-net";
+  expect(measureTraceWidths(input, input.traces!).get(0.8)).toMatchObject({
+    traceCount: 1,
+    nominalCoverage: 0,
+  });
   const solver = new PowerTraceExpanderSolver(input);
   solver.solve();
 
@@ -291,6 +296,11 @@ test("owns traces declared through netConnectionName", () => {
       .every((point) => point.width === 0.8),
   ).toBe(true);
   expect(solver.stats.resultStatus).toBe("complete");
+  expect(measureTraceWidths(input, solver.getOutput()).get(0.8)).toMatchObject({
+    traceCount: 1,
+    minimumWidth: 0.8,
+    nominalCoverage: 1,
+  });
 });
 
 test("rejects invalid trace selections before starting cleanup or repair", () => {
