@@ -12,6 +12,13 @@ const definedNames = (names: Array<string | null | undefined>) =>
  */
 export class ConnectionNameResolver {
   private readonly parent = new Map<string, string>();
+  // Retain only aliases from the most recently indexed obstacle collection.
+  // Cloned boards and transient trace arrays cannot accumulate across rebuilds.
+  private cachedObstacles: SimpleRouteJson["obstacles"] | undefined;
+  private readonly canonicalSetsByAliases = new Map<
+    string[],
+    { aliases: string[]; canonicalNames: ReadonlySet<string> } | null
+  >();
 
   constructor(
     simpleRouteJson: SimpleRouteJson,
@@ -46,10 +53,42 @@ export class ConnectionNameResolver {
     for (const obstacle of simpleRouteJson.obstacles) {
       this.unionAll(obstacle.connectedTo);
     }
+    this.setCacheableObstacles(simpleRouteJson.obstacles);
+  }
+
+  setCacheableObstacles(obstacles: SimpleRouteJson["obstacles"]): void {
+    if (this.cachedObstacles === obstacles) return;
+    this.cachedObstacles = obstacles;
+    this.canonicalSetsByAliases.clear();
+    for (const obstacle of obstacles) {
+      this.canonicalSetsByAliases.set(obstacle.connectedTo, null);
+    }
   }
 
   canonicalize(names: string[]) {
     return [...new Set(names.map((name) => this.find(name)))];
+  }
+
+  /** Reuse static copper aliases across spatial-index rebuilds. */
+  canonicalizeToSet(names: string[]): ReadonlySet<string> {
+    const cached = this.canonicalSetsByAliases.get(names);
+    if (
+      cached &&
+      names.length === cached.aliases.length &&
+      names.every((name, index) => name === cached.aliases[index])
+    ) {
+      return cached.canonicalNames;
+    }
+    // Net unions finish in the constructor. Later lookups can only add
+    // isolated names, so existing roots remain valid for this resolver.
+    const canonicalNames = new Set(this.canonicalize(names));
+    if (this.canonicalSetsByAliases.has(names)) {
+      this.canonicalSetsByAliases.set(names, {
+        aliases: [...names],
+        canonicalNames,
+      });
+    }
+    return canonicalNames;
   }
 
   private unionAll(names: string[]) {
