@@ -71,7 +71,8 @@ export type Obstacle = {
   isNonPlatedHole?: boolean;
   shape?: "circle";
   componentId?: string;
-  type: "rect";
+  /** SRJ `oval` obstacles are ellipses; circular pads have equal dimensions. */
+  type: "rect" | "oval";
   layers: string[];
   zLayers?: number[];
   center: Point;
@@ -156,6 +157,8 @@ export type IndexedObstacle = {
   kind: "obstacle" | "trace" | "via";
   obstacleKind?: "pad" | "via" | "hole" | "other";
   connectionNames: string[];
+  /** Stable identity for all indexed chunks from one copper object. */
+  copperObjectId?: string;
   traceIndex?: number;
   routeStartIndex?: number;
   routeEndIndex?: number;

@@ -9,6 +9,7 @@ import {
   countNonOctilinearSegments,
   getPathLength,
 } from "./octilinear";
+import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
   InflationCorridorSegment,
@@ -166,13 +167,18 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   initialPadClearanceViolationCountByClearance: Record<string, number> = {};
   remainingPadClearanceViolationCountByClearance: Record<string, number> = {};
   budgetLimited = false;
+  connectivityValidationCount = 0;
+  connectivityRollbackCount = 0;
+  connectivityRegressionEndpointIds: string[] = [];
+  connectivityValidationError: string | null = null;
+  connectivityRollbackMutationStats: Record<string, number> | null = null;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly connectivityInvariant: PhysicalConnectivityInvariant;
   private readonly initialTraces: SimplifiedPcbTrace[];
   private readonly mutableTraceIndices: number[];
   private readonly mutableTraceIndexSet: Set<number>;
   private readonly viaRepairTraceIndices: number[];
-  private finalizedMutatedTraceIndices: number[] = [];
   private readonly traceIndices: number[];
   private readonly maxRerouteLength: number;
   private readonly clearancePaddingTiers: number[];
@@ -188,6 +194,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private pendingPushedViaRepair: PushedViaRepair | null = null;
   private alternatePushedViaRepairs: PushedViaRepair[] = [];
   private pushedViaRepairRollbackTraces: SimplifiedPcbTrace[] | null = null;
+  private connectivityFinalized = false;
+  private finalizedMutatedTraceIndices: number[] = [];
   private resumePhase: Exclude<
     CleanupPhase,
     "evaluate-candidate" | "shove-clearance" | "complete"
@@ -203,6 +211,10 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     this.inputProblem = structuredClone(inputProblem);
     this.traces = structuredClone(inputProblem.traces);
     this.initialTraces = structuredClone(inputProblem.traces);
+    this.connectivityInvariant = new PhysicalConnectivityInvariant(
+      this.inputProblem.simpleRouteJson,
+      this.initialTraces,
+    );
     this.connectionNameResolver = new ConnectionNameResolver(
       inputProblem.simpleRouteJson,
       this.traces,
@@ -308,7 +320,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         this.startNextViaGridCandidate();
         break;
       case "complete":
-        this.finalizeMutationIndices();
+        this.ensureConnectivitySafeOutput();
         this.solved = true;
         break;
     }
@@ -2192,12 +2204,71 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     ].filter((name): name is string => Boolean(name));
   }
 
-  private finalizeMutationIndices() {
-    this.finalizedMutatedTraceIndices = this.traces.flatMap(
-      (trace, traceIndex) =>
-        JSON.stringify(this.initialTraces[traceIndex]) === JSON.stringify(trace)
-          ? []
-          : [traceIndex],
+  private ensureConnectivitySafeOutput() {
+    if (this.connectivityFinalized) return;
+    this.connectivityFinalized = true;
+    this.connectivityValidationCount++;
+    try {
+      const validation = this.connectivityInvariant.validate(this.traces);
+      this.connectivityValidationError ??= validation.validationError ?? null;
+      if (validation.safe) {
+        this.finalizedMutatedTraceIndices = this.getMutatedTraceIndices();
+        return;
+      }
+      this.connectivityRegressionEndpointIds = [
+        ...new Set(
+          validation.regressions.flatMap(
+            (regression) => regression.baselineEndpointLabels,
+          ),
+        ),
+      ];
+    } catch (error) {
+      this.connectivityValidationError =
+        error instanceof Error ? error.message : String(error);
+    }
+
+    this.connectivityRollbackCount++;
+    this.connectivityRollbackMutationStats = {
+      committedClearanceShoveCount: this.committedClearanceShoveCount,
+      viaPairCountRemoved: this.viaPairCountRemoved,
+      viaCountRemoved: this.viaCountRemoved,
+      simplifiedPathCount: this.simplifiedPathCount,
+      normalizedSegmentCount: this.normalizedSegmentCount,
+      achievedExtraClearanceCount: this.achievedExtraClearanceCount,
+      relocatedViaCount: this.relocatedViaCount,
+      committedPushedViaRepairCount: this.committedPushedViaRepairCount,
+      padClearanceRerouteCount: this.padClearanceRerouteCount,
+    };
+    this.committedClearanceShoveCount = 0;
+    this.viaPairCountRemoved = 0;
+    this.viaCountRemoved = 0;
+    this.simplifiedPathCount = 0;
+    this.normalizedSegmentCount = 0;
+    this.achievedExtraClearanceCount = 0;
+    this.relocatedViaCount = 0;
+    this.committedPushedViaRepairCount = 0;
+    this.padClearanceRerouteCount = 0;
+    this.traces = structuredClone(this.initialTraces);
+    this.obstacleIndex = new SpatialObstacleIndex(
+      this.inputProblem.simpleRouteJson,
+      this.traces,
+      undefined,
+      [],
+      this.connectionNameResolver,
+    );
+    this.remainingPadClearanceViolationCount =
+      this.countPadClearanceViolations();
+    this.remainingPadClearanceViolationCountByClearance =
+      this.countPadClearanceViolationsByTier();
+    this.finalizedMutatedTraceIndices = this.getMutatedTraceIndices();
+  }
+
+  private getMutatedTraceIndices() {
+    const count = Math.max(this.initialTraces.length, this.traces.length);
+    return Array.from({ length: count }, (_, traceIndex) => traceIndex).filter(
+      (traceIndex) =>
+        JSON.stringify(this.initialTraces[traceIndex]) !==
+        JSON.stringify(this.traces[traceIndex]),
     );
   }
 
@@ -2213,9 +2284,19 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       completionReason:
         this.phase !== "complete" && !this.solved
           ? null
-          : this.budgetLimited
-            ? "iteration_budget"
-            : "completed",
+          : this.connectivityRollbackCount > 0
+            ? "connectivity_rollback"
+            : this.budgetLimited
+              ? "iteration_budget"
+              : this.connectivityValidationError
+                ? "connectivity_validation_unavailable"
+                : "completed",
+      resultStatus:
+        this.connectivityRollbackCount > 0 ||
+        this.budgetLimited ||
+        this.connectivityValidationError !== null
+          ? "best_effort"
+          : "complete",
       traceCursor: this.traceCursor,
       traceCount: activeTraceIndices.length,
       traceIndex: activeTraceIndices[this.traceCursor],
@@ -2251,6 +2332,16 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       remainingPadClearanceViolationCountByClearance: {
         ...this.remainingPadClearanceViolationCountByClearance,
       },
+      connectivityValidationCount: this.connectivityValidationCount,
+      connectivityRollbackCount: this.connectivityRollbackCount,
+      connectivityRegressionEndpointIds: [
+        ...this.connectivityRegressionEndpointIds,
+      ],
+      connectivityValidationError: this.connectivityValidationError,
+      connectivityRollbackMutationStats:
+        this.connectivityRollbackMutationStats === null
+          ? null
+          : { ...this.connectivityRollbackMutationStats },
       mutatedTraceIndices: [...this.finalizedMutatedTraceIndices],
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
@@ -2293,7 +2384,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     this.candidateShoveCount = 0;
     this.baseCandidateValidated = false;
     this.candidateSetMayUseGridFallback = false;
-    this.finalizeMutationIndices();
+    this.ensureConnectivitySafeOutput();
     this.obstacleIndex = new SpatialObstacleIndex(
       this.inputProblem.simpleRouteJson,
       this.traces,
@@ -2313,7 +2404,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   }
 
   override getOutput(): PowerTraceCleanupOutput {
-    return this.traces;
+    return structuredClone(this.solved ? this.traces : this.initialTraces);
   }
 
   override visualize(): GraphicsObject {

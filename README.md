@@ -62,6 +62,14 @@ otherwise-unmatched child route does not inherit a board-level connection's
 nominal width. This keeps imported internal routing byte-for-byte while still
 allowing a connected board trace to enter its pads, vias, and boundary copper.
 
+Physical copper contact and terminal-component comparison come from
+`circuit-json-to-connectivity-map`; the solver adapts SRJ aliases and owns rollback.
+Expansion, cleanup, clearance repair, and final acceptance preserve the last
+validated terminal partition. A phase may merge components but cannot split a
+previously connected group. Rejected work restores the accepted trace snapshot
+and resets its mutation counters; unsupported changed geometry fails closed.
+Output copies cannot mutate the stored checkpoint.
+
 The solver automatically repeats productive passes and stops when a pass adds
 less than 0.1% of the total nominal copper area, with a four-pass hard cap.
 This lets displaced traces unlock later improvements without turning a
