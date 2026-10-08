@@ -1718,7 +1718,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
     if (solver.solved) {
       const output = solver.getOutput();
-      if (output) {
+      const contactsArePreserved =
+        output &&
+        this.sameNetContactsArePreserved(
+          this.traces[output.pushedTraceIndex]!.route,
+          output.traces[output.pushedTraceIndex]!.route,
+          this.getTraceConnectionNames(this.traces[output.pushedTraceIndex]!),
+          output.pushedTraceIndex,
+        );
+      if (output && contactsArePreserved) {
         this.traces = output.traces;
         this.pushedTraceCount++;
         this.expansionPushedTraceIndices.add(output.pushedTraceIndex);
@@ -1729,7 +1737,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         this.rebuildObstacleIndex();
         if (this.pendingLayerOutput) {
           if (
-            !this.layerRouteReplacementCollides(this.pendingLayerOutput, false)
+            !this.layerRouteReplacementCollides(
+              this.pendingLayerOutput,
+              false,
+            ) &&
+            this.layerRoutePreservesSameNetContacts(this.pendingLayerOutput)
           ) {
             this.applyLayerRoute(this.pendingLayerOutput);
             return;
@@ -1743,6 +1755,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         }
         this.phase = "evaluate-segment";
         return;
+      }
+      if (output && !contactsArePreserved) {
+        this.sameNetContactRejectionCount++;
       }
     }
 
