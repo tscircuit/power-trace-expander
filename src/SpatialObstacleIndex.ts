@@ -502,24 +502,52 @@ export class SpatialObstacleIndex {
    * on the same net because the fabrication constraint is mechanical.
    */
   collidesVia(query: ViaCollisionQuery): boolean {
+    return !this.iterateViaViolationSignatures(query).next().done;
+  }
+
+  /**
+   * Returns stable rule/object signatures for every via violation. This lets
+   * phase checkpoints distinguish a newly introduced collider from unrelated
+   * baseline debt on the same via.
+   */
+  getViaViolationSignatures(query: ViaCollisionQuery): Set<string> {
+    return new Set(this.iterateViaViolationSignatures(query));
+  }
+
+  private *iterateViaViolationSignatures(
+    query: ViaCollisionQuery,
+  ): Generator<string> {
     for (const layer of query.layers) {
-      if (
-        this.collides({
-          isVia: true,
-          start: query.point,
-          end: query.point,
-          layer,
-          width: query.padDiameter,
-          connectionNames: query.connectionNames,
-          ignoreTraceIndex: query.ignoreTraceIndex,
-          ignoreTraceIndices: query.ignoreTraceIndices,
-          ignoreRouteRange: query.ignoreRouteRange,
-          obstacleClearance: query.obstacleClearance,
-          blockSameNetObstacles: query.blockSameNetObstacles,
-          sameNetObstacleClearance: query.sameNetObstacleClearance,
-        })
-      ) {
-        return true;
+      const collisionQuery: CollisionQuery = {
+        isVia: true,
+        start: query.point,
+        end: query.point,
+        layer,
+        width: query.padDiameter,
+        connectionNames: query.connectionNames,
+        ignoreTraceIndex: query.ignoreTraceIndex,
+        ignoreTraceIndices: query.ignoreTraceIndices,
+        ignoreRouteRange: query.ignoreRouteRange,
+        obstacleClearance: query.obstacleClearance,
+        blockSameNetObstacles: query.blockSameNetObstacles,
+        sameNetObstacleClearance: query.sameNetObstacleClearance,
+      };
+      if (this.isOutsideBounds(collisionQuery)) {
+        yield `board-edge:${layer}`;
+      }
+      const { radius, candidates, canonicalConnectionNames } =
+        this.getCollisionCandidates(collisionQuery);
+      for (const itemIndex of candidates) {
+        if (
+          this.itemCollides(
+            itemIndex,
+            collisionQuery,
+            radius,
+            canonicalConnectionNames,
+          )
+        ) {
+          yield `copper:${layer}:${this.getViolationObjectId(itemIndex)}`;
+        }
       }
     }
 
@@ -530,11 +558,17 @@ export class SpatialObstacleIndex {
         Math.hypot(point.x - query.point.x, point.y - query.point.y) <
         minimumNewViaSpacing - 1e-9
       ) {
-        return true;
+        yield `new-via-drill:${point.x},${point.y}:${query.holeDiameter}`;
       }
     }
 
-    for (const via of query.fixedVias ?? []) {
+    const fixedVias = query.fixedVias ?? [];
+    for (
+      let fixedViaIndex = 0;
+      fixedViaIndex < fixedVias.length;
+      fixedViaIndex++
+    ) {
+      const via = fixedVias[fixedViaIndex]!;
       const minimumSpacing =
         query.holeDiameter / 2 +
         via.holeDiameter / 2 +
@@ -543,7 +577,7 @@ export class SpatialObstacleIndex {
         Math.hypot(via.point.x - query.point.x, via.point.y - query.point.y) <
         minimumSpacing - 1e-9
       ) {
-        return true;
+        yield `fixed-via-drill:${fixedViaIndex}:${via.point.x},${via.point.y}:${via.holeDiameter}`;
       }
     }
 
@@ -574,7 +608,7 @@ export class SpatialObstacleIndex {
       if (query.ignoreTraceIndices?.includes(item.traceIndex ?? -1)) {
         continue;
       }
-      const key = `${item.traceIndex ?? -1}:${item.routeStartIndex ?? -1}`;
+      const key = `${this.copperObjectIds[itemIndex] ?? "unknown"}:${item.routeStartIndex ?? -1}`;
       if (seenTraceRoutePairs.has(key)) continue;
       seenTraceRoutePairs.add(key);
       const existingHoleDiameter =
@@ -590,10 +624,30 @@ export class SpatialObstacleIndex {
         ) <
         minimumSpacing - 1e-9
       ) {
-        return true;
+        yield `indexed-via-drill:${this.getViolationObjectId(itemIndex)}`;
       }
     }
-    return false;
+  }
+
+  private getViolationObjectId(itemIndex: number) {
+    const item = this.items[itemIndex]!;
+    const objectId = this.copperObjectIds[itemIndex]!;
+    const routeRange = `${item.routeStartIndex ?? ""}-${item.routeEndIndex ?? ""}`;
+    if (item.kind === "obstacle") return objectId;
+    if (item.exactShape?.type === "segment") {
+      const { start, end, width } = item.exactShape;
+      return `${objectId}:${item.kind}:${routeRange}:${start.x},${start.y}:${end.x},${end.y}:${width}`;
+    }
+    if (item.exactShape?.type === "circle") {
+      const { center, radius } = item.exactShape;
+      return `${objectId}:${item.kind}:${routeRange}:${center.x},${center.y}:${radius}`;
+    }
+    if (item.exactShape?.type === "polygon") {
+      return `${objectId}:${item.kind}:${routeRange}:${item.exactShape.points
+        .map((point) => `${point.x},${point.y}`)
+        .join(";")}`;
+    }
+    return `${objectId}:${item.kind}:${routeRange}:${item.minX},${item.minY},${item.maxX},${item.maxY}`;
   }
 
   private getCollisionCandidates(query: CollisionQuery) {
