@@ -8,6 +8,7 @@ import {
   distanceSegmentToSegment,
   segmentIntersectsRect,
 } from "./geometry";
+import { RectilinearPadUnion } from "./RectilinearPadUnion";
 import type {
   CollisionQuery,
   IndexedObstacle,
@@ -17,8 +18,18 @@ import type {
   ViaCollisionQuery,
 } from "./types";
 
+type PhysicalPadId = string & { readonly __physicalPadId: unique symbol };
+type LayerName = string;
+
+type FragmentedPad = {
+  obstacles: Obstacle[];
+  obstaclesByLayer: ReadonlyMap<LayerName, readonly Obstacle[]>;
+  rectilinearUnionByLayer: Map<LayerName, RectilinearPadUnion | null>;
+};
+
 type ConnectedPad = {
   obstacle: Obstacle;
+  fragmentedPad?: FragmentedPad;
   canonicalConnectionNames: ReadonlySet<string>;
 };
 
@@ -103,6 +114,48 @@ export class SpatialObstacleIndex {
       (item) =>
         new Set(connectionNameResolver.canonicalize(item.connectionNames)),
     );
+    const obstaclesByPhysicalPadId = new Map<PhysicalPadId, Obstacle[]>();
+    for (const obstacle of simpleRouteJson.obstacles) {
+      const physicalPadIds = obstacle.connectedTo
+        .filter(
+          (name) =>
+            name.startsWith("pcb_smtpad_") ||
+            name.startsWith("pcb_plated_hole_"),
+        )
+        .sort();
+      if (physicalPadIds.length === 0) continue;
+      const metadataPhysicalPadId =
+        obstacle.circuitJsonMetadata?.pcb_smtpad_id ??
+        obstacle.circuitJsonMetadata?.pcb_plated_hole_id;
+      const physicalPadId =
+        metadataPhysicalPadId ??
+        (physicalPadIds.length === 1 ? physicalPadIds[0] : undefined);
+      if (!physicalPadId) continue;
+      const physicalPadKey = physicalPadId as PhysicalPadId;
+      const padObstacles = obstaclesByPhysicalPadId.get(physicalPadKey) ?? [];
+      padObstacles.push(obstacle);
+      obstaclesByPhysicalPadId.set(physicalPadKey, padObstacles);
+    }
+    const fragmentedPadByObstacle = new Map<Obstacle, FragmentedPad>();
+    for (const obstacles of obstaclesByPhysicalPadId.values()) {
+      if (obstacles.length < 2) continue;
+      const obstaclesByLayer = new Map<LayerName, Obstacle[]>();
+      for (const obstacle of obstacles) {
+        for (const layer of obstacle.layers) {
+          const layerObstacles = obstaclesByLayer.get(layer) ?? [];
+          layerObstacles.push(obstacle);
+          obstaclesByLayer.set(layer, layerObstacles);
+        }
+      }
+      const fragmentedPad = {
+        obstacles,
+        obstaclesByLayer,
+        rectilinearUnionByLayer: new Map(),
+      } satisfies FragmentedPad;
+      for (const obstacle of obstacles) {
+        fragmentedPadByObstacle.set(obstacle, fragmentedPad);
+      }
+    }
     this.connectedPads = simpleRouteJson.obstacles.flatMap((obstacle) => {
       if (
         !obstacle.connectedTo.some(
@@ -116,6 +169,7 @@ export class SpatialObstacleIndex {
       return [
         {
           obstacle,
+          fragmentedPad: fragmentedPadByObstacle.get(obstacle),
           canonicalConnectionNames: new Set(
             connectionNameResolver.canonicalize(obstacle.connectedTo),
           ),
@@ -259,8 +313,8 @@ export class SpatialObstacleIndex {
     const padsAtPoint = this.getConnectedPadsAtPoint(query, point);
     if (padsAtPoint.length === 0) return null;
     return Math.max(
-      ...padsAtPoint.map(({ obstacle }) =>
-        this.getPadWidthNormalToQuery(obstacle, query),
+      ...padsAtPoint.map((pad) =>
+        this.getPadWidthLimitAtPointForRegion({ pad, query, point }),
       ),
     );
   }
@@ -272,17 +326,9 @@ export class SpatialObstacleIndex {
     const padsAtPoint = this.getConnectedPadsAtPoint(query, point);
     if (padsAtPoint.length === 0) return null;
     return Math.max(
-      ...padsAtPoint.map(({ obstacle }) => {
-        const localPoint = this.getObstacleLocalPoint(point, obstacle);
-        return Math.max(
-          0,
-          2 *
-            Math.min(
-              obstacle.width / 2 - Math.abs(localPoint.x),
-              obstacle.height / 2 - Math.abs(localPoint.y),
-            ),
-        );
-      }),
+      ...padsAtPoint.map((pad) =>
+        this.getPadEndpointWidthLimitAtPoint({ pad, query, point }),
+      ),
     );
   }
 
@@ -295,11 +341,132 @@ export class SpatialObstacleIndex {
     const padsAtPoint = this.getConnectedPadsAtPoint(query, inside);
     const pad = padsAtPoint.sort(
       (a, b) =>
-        this.getPadWidthNormalToQuery(b.obstacle, query) -
-        this.getPadWidthNormalToQuery(a.obstacle, query),
+        this.getPadWidthLimitAtPointForRegion({
+          pad: b,
+          query,
+          point: inside,
+        }) -
+        this.getPadWidthLimitAtPointForRegion({
+          pad: a,
+          query,
+          point: inside,
+        }),
     )[0];
-    if (!pad || this.pointIsInsideObstacle(outside, pad.obstacle)) return null;
-    return this.getObstacleBoundaryPoint(inside, outside, pad.obstacle);
+    if (!pad) return null;
+    if (!pad.fragmentedPad) {
+      if (this.pointIsInsideObstacle(outside, pad.obstacle)) return null;
+      return this.getObstacleBoundaryPoint(inside, outside, pad.obstacle);
+    }
+    const rectilinearUnion = this.getRectilinearPadUnion(
+      pad.fragmentedPad,
+      query.layer,
+    );
+    if (rectilinearUnion) {
+      return rectilinearUnion.getExitPoint({ inside, outside });
+    }
+    if (
+      pad.fragmentedPad.obstacles.some(
+        (obstacle) =>
+          obstacle.layers.includes(query.layer) &&
+          this.pointIsInsideObstacle(outside, obstacle),
+      )
+    ) {
+      return null;
+    }
+    const obstacle = pad.fragmentedPad.obstacles
+      .filter(
+        (candidate) =>
+          candidate.layers.includes(query.layer) &&
+          this.pointIsInsideObstacle(inside, candidate),
+      )
+      .sort(
+        (a, b) =>
+          this.getPadWidthNormalToQuery(b, query) -
+          this.getPadWidthNormalToQuery(a, query),
+      )[0];
+    return obstacle
+      ? this.getObstacleBoundaryPoint(inside, outside, obstacle)
+      : null;
+  }
+
+  private getPadWidthLimitAtPointForRegion({
+    pad,
+    query,
+    point,
+  }: {
+    pad: ConnectedPad;
+    query: CollisionQuery;
+    point: { x: number; y: number };
+  }): number {
+    if (!pad.fragmentedPad) {
+      return this.getPadWidthNormalToQuery(pad.obstacle, query);
+    }
+    const unionWidth = this.getRectilinearPadUnion(
+      pad.fragmentedPad,
+      query.layer,
+    )?.getSymmetricWidthAtPoint({
+      point,
+      segmentStart: query.start,
+      segmentEnd: query.end,
+    });
+    if (unionWidth !== null && unionWidth !== undefined) return unionWidth;
+    return Math.max(
+      ...pad.fragmentedPad.obstacles
+        .filter(
+          (obstacle) =>
+            obstacle.layers.includes(query.layer) &&
+            this.pointIsInsideObstacle(point, obstacle),
+        )
+        .map((obstacle) => this.getPadWidthNormalToQuery(obstacle, query)),
+    );
+  }
+
+  private getPadEndpointWidthLimitAtPoint({
+    pad,
+    query,
+    point,
+  }: {
+    pad: ConnectedPad;
+    query: CollisionQuery;
+    point: { x: number; y: number };
+  }): number {
+    if (!pad.fragmentedPad) {
+      const localPoint = this.getObstacleLocalPoint(point, pad.obstacle);
+      return Math.max(
+        0,
+        2 *
+          Math.min(
+            pad.obstacle.width / 2 - Math.abs(localPoint.x),
+            pad.obstacle.height / 2 - Math.abs(localPoint.y),
+          ),
+      );
+    }
+    const unionDiameter = this.getRectilinearPadUnion(
+      pad.fragmentedPad,
+      query.layer,
+    )?.getCenteredCircleDiameter(point);
+    if (unionDiameter !== null && unionDiameter !== undefined) {
+      return unionDiameter;
+    }
+    return Math.max(
+      ...pad.fragmentedPad.obstacles
+        .filter(
+          (obstacle) =>
+            obstacle.layers.includes(query.layer) &&
+            this.pointIsInsideObstacle(point, obstacle),
+        )
+        .map((obstacle) => {
+          const localPoint = this.getObstacleLocalPoint(point, obstacle);
+          return Math.max(
+            0,
+            2 *
+              Math.min(
+                obstacle.width / 2 - Math.abs(localPoint.x),
+                obstacle.height / 2 - Math.abs(localPoint.y),
+              ),
+          );
+        }),
+    );
   }
 
   private getConnectedPadsAtPoint(
@@ -317,6 +484,19 @@ export class SpatialObstacleIndex {
         ) &&
         this.pointIsInsideObstacle(point, obstacle),
     );
+  }
+
+  private getRectilinearPadUnion(
+    pad: FragmentedPad,
+    layer: LayerName,
+  ): RectilinearPadUnion | null {
+    const cachedUnion = pad.rectilinearUnionByLayer.get(layer);
+    if (cachedUnion !== undefined) return cachedUnion;
+    const union = RectilinearPadUnion.create(
+      pad.obstaclesByLayer.get(layer) ?? [],
+    );
+    pad.rectilinearUnionByLayer.set(layer, union);
+    return union;
   }
 
   private pointIsInsideObstacle(

@@ -8,6 +8,7 @@
         "@tscircuit/solver-utils": "^0.0.19",
         "flatbush": "^4.6.2",
         "graphics-debug": "^0.0.96",
+        "transformation-matrix": "^2.16.1",
       },
       "devDependencies": {
         "@biomejs/biome": "^2.5.4",

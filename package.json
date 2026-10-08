@@ -30,7 +30,8 @@
   "dependencies": {
     "@tscircuit/solver-utils": "^0.0.19",
     "flatbush": "^4.6.2",
-    "graphics-debug": "^0.0.96"
+    "graphics-debug": "^0.0.96",
+    "transformation-matrix": "^2.16.1"
   },
   "peerDependencies": {
     "@tscircuit/core": ">=0.0.337 <0.1.0",

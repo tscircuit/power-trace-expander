@@ -68,6 +68,10 @@ export type SimpleRouteConnection = {
 
 export type Obstacle = {
   obstacleId?: string;
+  circuitJsonMetadata?: {
+    pcb_smtpad_id?: string;
+    pcb_plated_hole_id?: string;
+  };
   isNonPlatedHole?: boolean;
   shape?: "circle";
   componentId?: string;

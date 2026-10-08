@@ -13,7 +13,7 @@ test("debugger catalog discovers both simple and complex fixtures", async () => 
 
   expect(cosmosConfig.fixtureFileSuffix).toBe("fixture");
   expect(fixturePaths.filter((path) => path.includes("/simple/"))).toHaveLength(
-    14,
+    15,
   );
   expect(
     fixturePaths.filter((path) => path.includes("/complex/")),
@@ -53,5 +53,8 @@ test("debugger catalog discovers both simple and complex fixtures", async () => 
   );
   expect(fixturePaths).toContain(
     "fixtures/simple/constrained-pad-clearance.fixture.tsx",
+  );
+  expect(fixturePaths).toContain(
+    "fixtures/simple/fragmented-connected-pad-neckdown.fixture.tsx",
   );
 });
