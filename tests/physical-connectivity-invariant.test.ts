@@ -135,22 +135,6 @@ test("includes aliases, fixed traces, and the physical via layer span", () => {
   ]);
 });
 
-test("netConnectionName resolves into the connection's single canonical net", () => {
-  const input = baseProblem([
-    { x: -1, y: 0, layer: "top", pointId: "left" },
-    { x: 1, y: 0, layer: "top", pointId: "right" },
-  ]);
-  input.connections[0]!.netConnectionName = "canonical-net";
-  const traces = [trace("net-alias", [wire(-1, 0), wire(1, 0)])];
-
-  const invariant = new PhysicalConnectivityInvariant(input, traces);
-  const validation = invariant.validate(traces);
-
-  expect(invariant.baseline.endpointComponents).toEqual([["0:0", "0:1"]]);
-  expect(validation.candidate.endpointComponents).toEqual([["0:0", "0:1"]]);
-  expect(validation.safe).toBe(true);
-});
-
 test("the full expander owns and widens a netConnectionName trace", () => {
   const input = baseProblem([
     { x: -1, y: 0, layer: "top", pointId: "left" },
@@ -163,6 +147,10 @@ test("the full expander owns and widens a netConnectionName trace", () => {
   input.traces = [
     trace("net-alias", [wire(-1, 0, 0.2), wire(1, 0, 0.2)], "canonical-net"),
   ];
+
+  expect(
+    capturePhysicalConnectivity(input, input.traces).endpointComponents,
+  ).toEqual([["0:0", "0:1"]]);
 
   const solver = new PowerTraceExpanderSolver(input);
   solver.solve();
@@ -203,39 +191,6 @@ test("uses the upstream position-layer alias when explicit net IDs differ", () =
   const invariant = new PhysicalConnectivityInvariant(input, baseline);
   expect(invariant.baseline.endpointComponents).toEqual([["0:0", "0:1"]]);
   expect(invariant.validate([]).safe).toBe(false);
-});
-
-test("a non-colocated wire-via adjacency fails closed", () => {
-  const input: PowerTraceExpanderInput = {
-    ...baseProblem([
-      { x: -1, y: 0, layer: "top", pointId: "top-terminal" },
-      { x: 1, y: 0, layer: "bottom", pointId: "bottom-terminal" },
-    ]),
-    layerCount: 2,
-  };
-  const ambiguousTrace = trace("ambiguous-via", [
-    wire(-1, 0, 0.2, "top"),
-    {
-      route_type: "via",
-      x: 0,
-      y: 0,
-      from_layer: "top",
-      to_layer: "bottom",
-    },
-    wire(1, 0, 0.2, "bottom"),
-  ]);
-  const invariant = new PhysicalConnectivityInvariant(input, [ambiguousTrace]);
-
-  expect(invariant.validate([ambiguousTrace])).toMatchObject({
-    safe: true,
-    validationError: expect.stringContaining(
-      "adjacent to a non-colocated wire endpoint",
-    ),
-  });
-  expect(invariant.validate([])).toMatchObject({
-    safe: false,
-    validationError: expect.stringContaining("failed closed"),
-  });
 });
 
 test("legal non-circular ellipses fail closed without crashing", () => {

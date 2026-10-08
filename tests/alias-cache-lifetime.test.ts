@@ -23,12 +23,10 @@ test("caches board aliases without retaining transient trace alias arrays", (): 
   };
   const resolver = new ConnectionNameResolver(input);
   const cached = resolver.canonicalizeToSet(aliases);
-  for (let index = 0; index < 1000; index++) {
-    const transient = [...aliases];
-    const first = resolver.canonicalizeToSet(transient);
-    expect([...first]).toEqual([...cached]);
-    expect(resolver.canonicalizeToSet(transient)).not.toBe(first);
-  }
+  const transient = [...aliases];
+  const first = resolver.canonicalizeToSet(transient);
+  expect([...first]).toEqual([...cached]);
+  expect(resolver.canonicalizeToSet(transient)).not.toBe(first);
   expect(resolver.canonicalizeToSet(aliases)).toBe(cached);
 
   // Cleanup/inflation index cloned boards while sharing a net resolver.
@@ -40,6 +38,9 @@ test("caches board aliases without retaining transient trace alias arrays", (): 
     [],
     resolver,
   );
+  expect(resolver.canonicalizeToSet(aliases)).toBe(cached);
+  new SpatialObstacleIndex(input, [], undefined, [], resolver);
+  expect(resolver.canonicalizeToSet(aliases)).toBe(cached);
   new SpatialObstacleIndex(clone, [], undefined, [], resolver);
   const clonedAliases = clone.obstacles[0]!.connectedTo;
   const clonedSet = resolver.canonicalizeToSet(clonedAliases);

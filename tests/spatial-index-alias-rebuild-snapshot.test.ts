@@ -99,4 +99,29 @@ test("rebuilding after a same-length alias edit blocks copper that changed nets"
     ],
   );
   await expect(svg).toMatchSvgSnapshot(import.meta.path);
+
+  // Length changes invalidate the cache too, while a different resolver owns
+  // an independent interpretation of the same alias array.
+  aliases.push("POWER");
+  expect(
+    new SpatialObstacleIndex(input, [], undefined, [], resolver).collides(
+      query,
+    ),
+  ).toBe(false);
+  aliases.pop();
+  expect(
+    new SpatialObstacleIndex(input, [], undefined, [], resolver).collides(
+      query,
+    ),
+  ).toBe(true);
+  const otherResolver = new ConnectionNameResolver({
+    ...input,
+    obstacles: [{ ...input.obstacles[0]!, connectedTo: [...aliases, "POWER"] }],
+  });
+  expect(
+    new SpatialObstacleIndex(input, [], undefined, [], otherResolver).collides(
+      query,
+    ),
+  ).toBe(false);
+  expect(after.collides(query)).toBe(true);
 });

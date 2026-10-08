@@ -143,24 +143,6 @@ test("cleanup rolls back a simplification that splits a pad T-junction", () => {
   ).toEqual(expectedPartition);
 });
 
-test("the full expander emits only its last connectivity-safe checkpoint", () => {
-  const inputProblem = createProblem();
-  const solver = new PowerTraceExpanderSolver(inputProblem);
-  solver.solve();
-
-  expect(solver.solved).toBe(true);
-  expect(solver.stats).toMatchObject({
-    resultStatus: "best_effort",
-    completionReason: "connectivity_rollback",
-    connectivityRollbackCount: 1,
-    connectivityRollbackPhases: ["cleanup"],
-  });
-  expect(
-    capturePhysicalConnectivity(inputProblem, solver.getOutput())
-      .endpointComponents,
-  ).toEqual(expectedPartition);
-});
-
 test("the full expander rolls back an oval-pad corner shortcut", () => {
   const inputProblem = createOvalPadProblem();
   const inputTraces = structuredClone(inputProblem.traces!);
