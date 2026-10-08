@@ -1,6 +1,8 @@
 import {
   capturePhysicalConnectivity as captureCopperConnectivity,
+  findSplitPhysicalConnectivityComponents,
   type PhysicalConnectivitySnapshot,
+  type PhysicalConnectivitySplit as PhysicalConnectivityRegression,
 } from "circuit-json-to-connectivity-map";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import type {
@@ -10,13 +12,10 @@ import type {
   SimplifiedPcbTrace,
 } from "./types";
 
-export type { PhysicalConnectivitySnapshot } from "circuit-json-to-connectivity-map";
-
-export type PhysicalConnectivityRegression = {
-  baselineEndpointKeys: string[];
-  baselineEndpointLabels: string[];
-  candidateComponents: string[][];
-};
+export type {
+  PhysicalConnectivitySnapshot,
+  PhysicalConnectivitySplit as PhysicalConnectivityRegression,
+} from "circuit-json-to-connectivity-map";
 
 export type PhysicalConnectivityValidation = {
   safe: boolean;
@@ -243,29 +242,10 @@ export class PhysicalConnectivityInvariant {
         }`,
       };
     }
-    const regressions: PhysicalConnectivityRegression[] = [];
-
-    for (const baselineEndpointKeys of this.baseline.endpointComponents) {
-      if (baselineEndpointKeys.length < 2) continue;
-      const candidateComponentsById = new Map<string, string[]>();
-      for (const endpointKey of baselineEndpointKeys) {
-        const candidateComponentId =
-          candidate.componentByEndpointKey[endpointKey] ??
-          `missing:${endpointKey}`;
-        const endpointKeys =
-          candidateComponentsById.get(candidateComponentId) ?? [];
-        endpointKeys.push(endpointKey);
-        candidateComponentsById.set(candidateComponentId, endpointKeys);
-      }
-      if (candidateComponentsById.size <= 1) continue;
-      regressions.push({
-        baselineEndpointKeys: [...baselineEndpointKeys],
-        baselineEndpointLabels: baselineEndpointKeys.map(
-          (endpointKey) => this.baseline.endpointLabels[endpointKey]!,
-        ),
-        candidateComponents: [...candidateComponentsById.values()],
-      });
-    }
+    const regressions = findSplitPhysicalConnectivityComponents(
+      this.baseline,
+      candidate,
+    );
 
     return {
       safe: regressions.length === 0,

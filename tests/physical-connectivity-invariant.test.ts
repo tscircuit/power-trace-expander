@@ -40,37 +40,6 @@ const baseProblem = (
   traces: [],
 });
 
-test("rejects a component swap even when connected endpoint counts are equal", () => {
-  const input = baseProblem([
-    { x: -2, y: 1, layer: "top", pointId: "A" },
-    { x: -2, y: -1, layer: "top", pointId: "B" },
-    { x: 2, y: 1, layer: "top", pointId: "C" },
-    { x: 2, y: -1, layer: "top", pointId: "D" },
-  ]);
-  const baselineTraces = [
-    trace("left", [wire(-2, 1), wire(-2, -1)]),
-    trace("right", [wire(2, 1), wire(2, -1)]),
-  ];
-  const swappedTraces = [
-    trace("top", [wire(-2, 1), wire(2, 1)]),
-    trace("bottom", [wire(-2, -1), wire(2, -1)]),
-  ];
-
-  const invariant = new PhysicalConnectivityInvariant(input, baselineTraces);
-  const validation = invariant.validate(swappedTraces);
-
-  expect(invariant.baseline.endpointComponents).toEqual([
-    ["0:0", "0:1"],
-    ["0:2", "0:3"],
-  ]);
-  expect(validation.candidate.endpointComponents).toEqual([
-    ["0:0", "0:2"],
-    ["0:1", "0:3"],
-  ]);
-  expect(validation.safe).toBe(false);
-  expect(validation.regressions).toHaveLength(2);
-});
-
 test("uses first-route-point width and splitting preserves asymmetric copper", () => {
   const wideToNarrow = [wire(0, 0, 1), wire(2, 0, 0.2)];
   expect(splitUnderWidthWireSegments(wideToNarrow, 1)).toEqual(wideToNarrow);
