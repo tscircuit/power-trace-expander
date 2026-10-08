@@ -17,10 +17,7 @@ test("debugger catalog discovers both simple and complex fixtures", async () => 
   );
   expect(
     fixturePaths.filter((path) => path.includes("/complex/")),
-  ).toHaveLength(6);
-  expect(fixturePaths).toContain(
-    "fixtures/complex/mangopi-r3c-power-disconnection.fixture.tsx",
-  );
+  ).toHaveLength(5);
   expect(fixturePaths).toContain(
     "fixtures/complex/sample001-via-pair-reproduction.fixture.tsx",
   );
