@@ -2,6 +2,7 @@ import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import { WIDTH_EPSILON } from "./geometry";
+import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
   CollisionQuery,
@@ -40,15 +41,28 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   unresolvedSegmentCount = 0;
   totalWidthReduction = 0;
   budgetLimited = false;
+  connectivityValidationCount = 0;
+  connectivityRollbackCount = 0;
+  connectivityRegressionEndpointIds: string[] = [];
+  connectivityValidationError: string | null = null;
+  connectivityRollbackMutationStats: Record<string, number> | null = null;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly connectivityInvariant: PhysicalConnectivityInvariant;
+  private readonly initialConnectivitySafeTraces: SimplifiedPcbTrace[];
   private readonly minimumTraceWidth: number;
   private readonly traceIndices: number[];
+  private connectivityFinalized = false;
 
   constructor(inputProblem: PowerTraceClearanceRepairProblem) {
     super();
     this.inputProblem = structuredClone(inputProblem);
     this.traces = structuredClone(inputProblem.traces);
+    this.initialConnectivitySafeTraces = structuredClone(inputProblem.traces);
+    this.connectivityInvariant = new PhysicalConnectivityInvariant(
+      this.inputProblem.simpleRouteJson,
+      this.initialConnectivitySafeTraces,
+    );
     this.connectionNameResolver = new ConnectionNameResolver(
       inputProblem.simpleRouteJson,
       this.traces,
@@ -93,6 +107,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     const trace =
       traceIndex === undefined ? undefined : this.traces[traceIndex];
     if (!trace) {
+      this.ensureConnectivitySafeOutput();
       this.solved = true;
       this.stats = this.createStats();
       return;
@@ -456,15 +471,58 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     ].filter((name): name is string => Boolean(name));
   }
 
+  private ensureConnectivitySafeOutput() {
+    if (this.connectivityFinalized) return;
+    this.connectivityFinalized = true;
+    this.connectivityValidationCount++;
+    try {
+      const validation = this.connectivityInvariant.validate(this.traces);
+      this.connectivityValidationError ??= validation.validationError ?? null;
+      if (validation.safe) return;
+      this.connectivityRegressionEndpointIds = [
+        ...new Set(
+          validation.regressions.flatMap(
+            (regression) => regression.baselineEndpointLabels,
+          ),
+        ),
+      ];
+    } catch (error) {
+      this.connectivityValidationError =
+        error instanceof Error ? error.message : String(error);
+    }
+
+    this.connectivityRollbackCount++;
+    this.connectivityRollbackMutationStats = {
+      repairedSegmentCount: this.repairedSegmentCount,
+      repairedPadNeckSegmentCount: this.repairedPadNeckSegmentCount,
+      totalWidthReduction: this.totalWidthReduction,
+    };
+    this.repairedSegmentCount = 0;
+    this.repairedPadNeckSegmentCount = 0;
+    this.totalWidthReduction = 0;
+    this.traces = structuredClone(this.initialConnectivitySafeTraces);
+    this.obstacleIndex = this.createConservativeObstacleIndex();
+  }
+
   private createStats() {
     return {
       phase: this.solved ? "complete" : "repair-trace-clearance",
       budgetLimited: this.budgetLimited,
       completionReason: this.solved
-        ? this.budgetLimited
-          ? "iteration_budget"
-          : "completed"
+        ? this.connectivityRollbackCount > 0
+          ? "connectivity_rollback"
+          : this.budgetLimited
+            ? "iteration_budget"
+            : this.connectivityValidationError
+              ? "connectivity_validation_unavailable"
+              : "completed"
         : null,
+      resultStatus:
+        this.connectivityRollbackCount > 0 ||
+        this.budgetLimited ||
+        this.connectivityValidationError !== null
+          ? "best_effort"
+          : "complete",
       traceCursor: this.traceCursor,
       traceCount: this.traceIndices.length,
       traceIndex: this.traceIndices[this.traceCursor],
@@ -473,6 +531,16 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
       repairedPadNeckSegmentCount: this.repairedPadNeckSegmentCount,
       unresolvedSegmentCount: this.unresolvedSegmentCount,
       totalWidthReduction: this.totalWidthReduction,
+      connectivityValidationCount: this.connectivityValidationCount,
+      connectivityRollbackCount: this.connectivityRollbackCount,
+      connectivityRegressionEndpointIds: [
+        ...this.connectivityRegressionEndpointIds,
+      ],
+      connectivityValidationError: this.connectivityValidationError,
+      connectivityRollbackMutationStats:
+        this.connectivityRollbackMutationStats === null
+          ? null
+          : { ...this.connectivityRollbackMutationStats },
       spatialIndexRectCount: this.obstacleIndex.items.length,
     };
   }
@@ -484,8 +552,9 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   }
 
   override tryFinalAcceptance() {
-    // Every repair step is atomic, so `traces` always contains a safe committed
-    // prefix of the full clearance-repair pass.
+    // A width-only repair can still remove an edge contact. Validate the whole
+    // committed prefix before it is exposed as a budget-limited result.
+    this.ensureConnectivitySafeOutput();
     this.budgetLimited = true;
     this.solved = true;
     this.progress = 1;
@@ -497,7 +566,9 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   }
 
   override getOutput() {
-    return this.traces;
+    return structuredClone(
+      this.solved ? this.traces : this.initialConnectivitySafeTraces,
+    );
   }
 
   override visualize(): GraphicsObject {
