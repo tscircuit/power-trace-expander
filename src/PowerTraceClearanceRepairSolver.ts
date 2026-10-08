@@ -55,11 +55,20 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
     );
     this.minimumTraceWidth = inputProblem.simpleRouteJson.minTraceWidth;
     const requestedIndices = inputProblem.traceIndices
-      ? new Set(inputProblem.traceIndices)
-      : null;
-    this.traceIndices = this.traces.flatMap((_, traceIndex) =>
-      !requestedIndices || requestedIndices.has(traceIndex) ? [traceIndex] : [],
-    );
+      ? [...new Set(inputProblem.traceIndices)]
+      : this.traces.map((_, traceIndex) => traceIndex);
+    for (const traceIndex of requestedIndices) {
+      if (
+        !Number.isInteger(traceIndex) ||
+        traceIndex < 0 ||
+        traceIndex >= this.traces.length
+      ) {
+        throw new RangeError(
+          `Invalid clearance-repair trace index: ${traceIndex}`,
+        );
+      }
+    }
+    this.traceIndices = requestedIndices;
     this.obstacleIndex = this.createConservativeObstacleIndex();
     const initialSegmentCount = this.traceIndices.reduce(
       (count, traceIndex) =>
@@ -370,6 +379,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
               candidate.name,
               candidate.source_trace_id,
               candidate.rootConnectionName,
+              candidate.netConnectionName,
               ...(candidate.mergedConnectionNames ?? []),
             ].filter((name): name is string => Boolean(name)),
           )

@@ -135,6 +135,10 @@ export type PowerTraceCleanupProblem = {
   traces: SimplifiedPcbTrace[];
   /** Restrict cleanup to these traces while retaining all traces as obstacles. */
   traceIndices?: readonly number[];
+  /** Traces whose vias may be relocated by the DFM pass. Defaults to traceIndices. */
+  viaRepairTraceIndices?: readonly number[];
+  /** Traces that local cleanup shoves may mutate. Defaults to traceIndices. */
+  mutableTraceIndices?: readonly number[];
   maxRerouteLength?: number;
   clearancePaddingTiers?: readonly number[];
   /** Defaults to half of each power trace's nominal width. */
@@ -215,6 +219,8 @@ export type LocalTraceInflationProblem = {
   nominalPowerWidth: number;
   /** Do not shove traces at or above this electrical nominal width. */
   pushOnlyNominalWidthsBelow?: number;
+  /** Restrict which blocker traces may be mutated; all remain obstacles. */
+  mutableTraceIndices?: readonly number[];
   corridor: InflationCorridorSegment[];
   maxRerouteLength?: number;
 };
