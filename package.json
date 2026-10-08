@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@tscircuit/solver-utils": "^0.0.19",
-    "circuit-json-to-connectivity-map": "https://pkg.pr.new/tscircuit/circuit-json-to-connectivity-map@42ab87a82d7c4b382b36138395a954cbc2495953",
+    "circuit-json-to-connectivity-map": "https://pkg.pr.new/tscircuit/circuit-json-to-connectivity-map@176faa1efe32e34f0090bb594a8ba919e831443f",
     "flatbush": "^4.6.2",
     "graphics-debug": "^0.0.96"
   },
