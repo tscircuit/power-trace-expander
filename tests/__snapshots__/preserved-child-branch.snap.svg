@@ -1,0 +1,44 @@
+<svg width="640" height="640" viewBox="0 0 640 640" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><g><polyline data-points="-5,-2 2,-2" data-type="line" data-label="" points="40,434.8 432,434.8" fill="none" stroke="#169c45" stroke-width="44.800000000000004"/></g><g><polyline data-points="2,-2 3.125,-0.875" data-type="line" data-label="" points="432,434.8 495,371.8" fill="none" stroke="#169c45" stroke-width="44.800000000000004"/></g><g><polyline data-points="3.125,-0.875 3.875,-0.875" data-type="line" data-label="" points="495,371.8 537,371.8" fill="none" stroke="#169c45" stroke-width="44.800000000000004"/></g><g><polyline data-points="3.875,-0.875 5,-2" data-type="line" data-label="" points="537,371.8 600,434.8" fill="none" stroke="#169c45" stroke-width="44.800000000000004"/></g><g><polyline data-points="-1,1 -0.5,1.4" data-type="line" data-label="" points="264,266.8 292,244.40000000000003" fill="none" stroke="#cc3344" stroke-width="8.4"/></g><g><polyline data-points="-0.5,1.4 0,1" data-type="line" data-label="" points="292,244.40000000000003 320,266.8" fill="none" stroke="#cc3344" stroke-width="8.4"/></g><g><polyline data-points="0,1 0.5,1.4" data-type="line" data-label="" points="320,266.8 348,244.40000000000003" fill="none" stroke="#cc3344" stroke-width="8.4"/></g><g><polyline data-points="0.5,1.4 1,1" data-type="line" data-label="" points="348,244.40000000000003 376,266.8" fill="none" stroke="#cc3344" stroke-width="8.4"/></g><text data-type="text" data-label="Board-owned power trace may widen" data-x="0" data-y="-0.9" x="320" y="373.2" fill="black" font-size="11.200000000000001" font-family="sans-serif" text-anchor="middle" dominant-baseline="central">Board-owned power trace may widen</text><text data-type="text" data-label="Imported child detour and private terminal stay unchanged" data-x="0" data-y="2" x="320" y="210.8" fill="black" font-size="11.200000000000001" font-family="sans-serif" text-anchor="middle" dominant-baseline="central">Imported child detour and private terminal stay unchanged</text><g id="crosshair" style="display: none"><line id="crosshair-h" y1="0" y2="640" stroke="#666" stroke-width="0.5"/><line id="crosshair-v" x1="0" x2="640" stroke="#666" stroke-width="0.5"/><text id="coordinates" font-family="monospace" font-size="12" fill="#666"></text></g><script><![CDATA[
+              document.currentScript.parentElement.addEventListener('mousemove', (e) => {
+                const svg = e.currentTarget;
+                const rect = svg.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const crosshair = svg.getElementById('crosshair');
+                const h = svg.getElementById('crosshair-h');
+                const v = svg.getElementById('crosshair-v');
+                const coords = svg.getElementById('coordinates');
+                
+                crosshair.style.display = 'block';
+                h.setAttribute('x1', '0');
+                h.setAttribute('x2', '640');
+                h.setAttribute('y1', y);
+                h.setAttribute('y2', y);
+                v.setAttribute('x1', x);
+                v.setAttribute('x2', x);
+                v.setAttribute('y1', '0');
+                v.setAttribute('y2', '640');
+
+                // Calculate real coordinates using inverse transformation
+                const matrix = {"a":56,"c":0,"e":320,"b":0,"d":-56,"f":322.8};
+                // Manually invert and apply the affine transform
+                // Since we only use translate and scale, we can directly compute:
+                // x' = (x - tx) / sx
+                // y' = (y - ty) / sy
+                const sx = matrix.a;
+                const sy = matrix.d;
+                const tx = matrix.e; 
+                const ty = matrix.f;
+                const realPoint = {
+                  x: (x - tx) / sx,
+                  y: (y - ty) / sy // Flip y back since we used negative scale
+                }
+                
+                coords.textContent = `(${realPoint.x.toFixed(2)}, ${realPoint.y.toFixed(2)})`;
+                coords.setAttribute('x', (x + 5).toString());
+                coords.setAttribute('y', (y - 5).toString());
+              });
+              document.currentScript.parentElement.addEventListener('mouseleave', () => {
+                document.currentScript.parentElement.getElementById('crosshair').style.display = 'none';
+              });
+            ]]></script></svg>

@@ -23,6 +23,7 @@ export class ConnectionNameResolver {
           connection.name,
           connection.source_trace_id,
           connection.rootConnectionName,
+          connection.netConnectionName,
           ...(connection.mergedConnectionNames ?? []),
           ...connection.pointsToConnect.flatMap((point) => [
             point.pointId,

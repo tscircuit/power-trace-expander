@@ -6,16 +6,50 @@ import { UPPER_P_MOTOR_A_CONNECTION } from "../fixtures/rp2040-dual-motor/create
 import rp2040DualMotorProblem from "../fixtures/rp2040-dual-motor/input.json";
 import { PowerTraceExpanderSolver, SpatialObstacleIndex } from "../src";
 import { countNonOctilinearSegments } from "../src/octilinear";
+import type { SimplifiedPcbTrace } from "../src/types";
 import { getTraceWidthMetrics } from "./helpers/getTraceWidthMetrics";
 
 setDefaultTimeout(60_000);
 
 const R_ISEN_B_GROUND_CONNECTION = "source_trace_141";
 
+const connectionOwnsTrace = (
+  problem: SimpleRouteJson,
+  trace: SimplifiedPcbTrace,
+) => {
+  const traceNames = [
+    trace.connection_name,
+    trace.source_trace_id,
+    trace.rootConnectionName,
+    ...(trace.mergedConnectionNames ?? []),
+  ].filter((name): name is string => Boolean(name));
+  return problem.connections.some((connection) =>
+    [
+      connection.name,
+      connection.source_trace_id,
+      connection.rootConnectionName,
+      connection.netConnectionName,
+      ...(connection.mergedConnectionNames ?? []),
+    ]
+      .filter((name): name is string => Boolean(name))
+      .some((name) => traceNames.includes(name)),
+  );
+};
+
 test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async () => {
   const problem = structuredClone(
     rp2040DualMotorProblem,
   ) as unknown as SimpleRouteJson;
+  const inputTraces = structuredClone(
+    problem.traces ?? [],
+  ) as SimplifiedPcbTrace[];
+  const ownedTraceIndices = inputTraces.flatMap((trace, traceIndex) =>
+    connectionOwnsTrace(problem, trace) ? [traceIndex] : [],
+  );
+  const ownedTraceIndexSet = new Set(ownedTraceIndices);
+  const immutableTraceIndices = inputTraces.flatMap((_, traceIndex) =>
+    ownedTraceIndexSet.has(traceIndex) ? [] : [traceIndex],
+  );
   const before = getTraceWidthMetrics(problem, problem.traces ?? []);
   const conservativeBefore = getTraceWidthMetrics(
     problem,
@@ -129,7 +163,8 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(solver.simplifiedPathCount).toBeGreaterThanOrEqual(40);
   expect(solver.normalizedSegmentCount).toBeGreaterThanOrEqual(60);
   expect(solver.cleanupClearanceShoveCount).toBeGreaterThan(0);
-  expect(solver.relocatedViaCount).toBeGreaterThanOrEqual(5);
+  // Only board-owned routes are repaired. Imported child vias remain untouched.
+  expect(solver.relocatedViaCount).toBeGreaterThanOrEqual(2);
   expect(solver.unresolvedViaCount).toBe(0);
   expect(solver.padClearanceRerouteCount).toBeGreaterThanOrEqual(4);
   expect(solver.remainingPadClearanceViolationCount).toBeLessThan(
@@ -145,7 +180,9 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(
     solver.initialPadClearanceViolationCountByClearance["0.50"]! -
       solver.remainingPadClearanceViolationCountByClearance["0.50"]!,
-  ).toBeGreaterThanOrEqual(16);
+    // Cleanup is limited to the 53 directly owned traces. A larger board-wide
+    // delta previously rewrote child routes whose private terminals are absent.
+  ).toBeGreaterThanOrEqual(6);
   const rIsenBGroundConnection = problem.connections.find(
     (connection) => connection.name === R_ISEN_B_GROUND_CONNECTION,
   )!;
@@ -177,11 +214,12 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
     );
   expect(rIsenBNearbyVias).toEqual([]);
   const routedViaIndex = new SpatialObstacleIndex(problem, solver.getOutput());
-  for (
-    let traceIndex = 0;
-    traceIndex < solver.getOutput().length;
-    traceIndex++
-  ) {
+  const outputTraces = solver.getOutput();
+  for (const traceIndex of immutableTraceIndices) {
+    expect(outputTraces[traceIndex]).toEqual(inputTraces[traceIndex]);
+  }
+  expect(solver.immutableTraceMutationIds).toEqual([]);
+  for (const traceIndex of ownedTraceIndices) {
     const trace = solver.getOutput()[traceIndex]!;
     const connectionNames = [
       trace.pcb_trace_id,
