@@ -282,8 +282,7 @@ export function splitUnderWidthWireSegments(
       current.route_type !== "wire" ||
       next.route_type !== "wire" ||
       current.layer !== next.layer ||
-      (current.width >= nominalWidth - WIDTH_EPSILON &&
-        next.width >= nominalWidth - WIDTH_EPSILON)
+      current.width >= nominalWidth - WIDTH_EPSILON
     ) {
       continue;
     }
@@ -296,7 +295,9 @@ export function splitUnderWidthWireSegments(
         route_type: "wire",
         x: current.x + (next.x - current.x) * t,
         y: current.y + (next.y - current.y) * t,
-        width: current.width + (next.width - current.width) * t,
+        // Circuit JSON assigns each segment the width of its first point.
+        // Splitting must preserve that width instead of adding or removing copper.
+        width: current.width,
         layer: current.layer,
       });
     }
