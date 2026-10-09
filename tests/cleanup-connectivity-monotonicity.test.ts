@@ -1,4 +1,9 @@
 import { expect, test } from "bun:test";
+import "bun-match-svg";
+import {
+  getSvgFromGraphicsObject,
+  stackGraphicsHorizontally,
+} from "graphics-debug";
 import { PowerTraceCleanupSolver, PowerTraceExpanderSolver } from "../src";
 import { capturePhysicalConnectivity } from "../src/PhysicalConnectivityInvariant";
 import type { PowerTraceExpanderInput } from "../src/types";
@@ -116,7 +121,7 @@ const createOvalPadProblem = (): PowerTraceExpanderInput => ({
   ],
 });
 
-test("cleanup rolls back a simplification that splits a pad T-junction", () => {
+test("cleanup rolls back a simplification that splits a pad T-junction", async () => {
   const inputProblem = createProblem();
   const inputTraces = inputProblem.traces!;
   expect(
@@ -134,6 +139,11 @@ test("cleanup rolls back a simplification that splits a pad T-junction", () => {
     capturePhysicalConnectivity(inputProblem, solver.getOutput())
       .endpointComponents,
   ).toEqual(expectedPartition);
+  const shortcut = [{ ...inputTraces[0]!, route: [wire(-2, 0), wire(2, 0)] }];
+  expect(
+    capturePhysicalConnectivity(inputProblem, shortcut).endpointComponents,
+  ).toEqual([["0:0", "0:1"], ["0:2"]]);
+  expect(solver.getOutput()).toEqual(inputTraces);
   expect(solver.simplifiedPathCount).toBe(0);
   expect(solver.stats).toMatchObject({
     resultStatus: "best_effort",
@@ -141,6 +151,50 @@ test("cleanup rolls back a simplification that splits a pad T-junction", () => {
     connectivityRollbackCount: 1,
     connectivityRollbackMutationStats: { simplifiedPathCount: 1 },
   });
+
+  const states = [inputTraces, shortcut, solver.getOutput()];
+  const notes = [
+    "All three terminals share copper",
+    "Shortcut keeps endpoints, loses branch pad",
+    "Rollback retains the pad T-junction",
+  ];
+  const panels = states.map((traces, index) => ({
+    ...new PowerTraceCleanupSolver({
+      simpleRouteJson: inputProblem,
+      traces,
+    }).visualize(),
+    rects: inputProblem.obstacles.map((pad) => ({
+      center: pad.center,
+      width: pad.width,
+      height: pad.height,
+      fill: "rgba(245,158,11,0.3)",
+      stroke: "#b45309",
+    })),
+    circles: inputProblem.connections[0]!.pointsToConnect.map((point) => ({
+      center: point,
+      radius: 0.07,
+      fill: "#0f172a",
+    })),
+    texts: [
+      notes[index]!,
+      `Physical terminal groups: ${capturePhysicalConnectivity(inputProblem, traces).endpointComponents.length}`,
+    ].map((text, row) => ({
+      x: -2.4,
+      y: -1 - row * 0.5,
+      text,
+      fontSize: 0.25,
+      anchorSide: "center_left" as const,
+      color: "#334155",
+    })),
+  }));
+  await expect(
+    getSvgFromGraphicsObject(
+      stackGraphicsHorizontally(panels, {
+        titles: ["Connected input", "Rejected shortcut", "Accepted output"],
+      }),
+      { backgroundColor: "white", svgWidth: 1500, svgHeight: 450 },
+    ).replace(/[ \t]+$/gm, ""),
+  ).toMatchSvgSnapshot(import.meta.path);
 });
 
 test("the full expander rolls back an oval-pad corner shortcut", () => {
