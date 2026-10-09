@@ -67,6 +67,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
 
   private readonly blockerIndex: SpatialObstacleIndex;
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly mutableTraceIndices: Set<number> | null;
   private readonly blockersByTrace = new Map<number, BlockingTrace>();
   private blockers: BlockingTrace[] = [];
   private currentBlocker: BlockingTrace | null = null;
@@ -92,6 +93,9 @@ export class LocalTraceInflationSolver extends BaseSolver {
     this.inputProblem = structuredClone(inputProblem);
     this.traces = structuredClone(inputProblem.traces);
     this.corridor = structuredClone(inputProblem.corridor);
+    this.mutableTraceIndices = inputProblem.mutableTraceIndices
+      ? new Set(inputProblem.mutableTraceIndices)
+      : null;
     this.connectionNameResolver = connectionNameResolver;
     this.blockerIndex = new SpatialObstacleIndex(
       this.inputProblem.simpleRouteJson,
@@ -171,7 +175,9 @@ export class LocalTraceInflationSolver extends BaseSolver {
       item.traceIndex === undefined ||
       item.routeStartIndex === undefined ||
       item.routeEndIndex === undefined ||
-      item.traceIndex === this.inputProblem.powerTraceIndex
+      item.traceIndex === this.inputProblem.powerTraceIndex ||
+      (this.mutableTraceIndices !== null &&
+        !this.mutableTraceIndices.has(item.traceIndex))
     ) {
       return;
     }
@@ -506,6 +512,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
         connection.name,
         connection.source_trace_id,
         connection.rootConnectionName,
+        connection.netConnectionName,
         ...(connection.mergedConnectionNames ?? []),
       ]
         .filter((name): name is string => Boolean(name))

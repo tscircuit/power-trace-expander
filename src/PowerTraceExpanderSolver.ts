@@ -37,6 +37,12 @@ type SolverPhase =
   | "repair-trace-clearance"
   | "complete";
 
+type OwnershipCheckpointPhase =
+  | "expansion"
+  | "cleanup"
+  | "clearance-repair"
+  | "final";
+
 type RouteInterval = { startIndex: number; endIndex: number };
 
 type LayerRouteAttempt = {
@@ -93,6 +99,17 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   obstacleIndex: SpatialObstacleIndex;
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly traceOrder: number[];
+  private readonly selectedOwnedTraceIndices: number[];
+  private readonly mutableBlockerTraceIndices: number[];
+  private readonly immutableTraceIndices: number[];
+  private readonly initialImmutableTraceSignatures = new Map<number, string>();
+  private lastAcceptedTraces: SimplifiedPcbTrace[];
+  immutableTraceMutationIds: string[] = [];
+  immutableSafetyRollbackCount = 0;
+  readonly immutableSafetyRollbackPhases: OwnershipCheckpointPhase[] = [];
+  immutableSafetyRollbackMutationStats: Record<string, number> | null = null;
+  readonly expansionPushedTraceIndices = new Set<number>();
+  cleanupMutatedTraceIndices: number[] = [];
   private traceOrderCursor = -1;
   private readonly maxPassCount = 4;
   private previousWidthDeficit = 0;
@@ -181,6 +198,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.inputProblem = structuredClone(inputProblem);
     this.options = structuredClone(options);
     this.traces = structuredClone(inputProblem.traces ?? []);
+    this.lastAcceptedTraces = structuredClone(this.traces);
     this.connectionNameResolver = new ConnectionNameResolver(
       this.inputProblem,
       this.traces,
@@ -217,6 +235,26 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         initialPriorityByTrace.get(b)! - initialPriorityByTrace.get(a)! ||
         a - b,
     );
+    this.selectedOwnedTraceIndices = this.traceOrder.filter((traceIndex) =>
+      this.findConnectionForTrace(this.traces[traceIndex]!),
+    );
+    // Connectivity aliases establish same-net clearance, not mutation
+    // ownership. Imported child routes can share one or more board ports while
+    // retaining terminals that are absent from this SRJ, so only traces with a
+    // directly declared connection may be rewritten.
+    this.mutableBlockerTraceIndices = this.traces.flatMap(
+      (trace, traceIndex) =>
+        this.findConnectionForTrace(trace) ? [traceIndex] : [],
+    );
+    const mutableTraceIndexSet = new Set(this.mutableBlockerTraceIndices);
+    this.immutableTraceIndices = this.traces.flatMap((trace, traceIndex) => {
+      if (mutableTraceIndexSet.has(traceIndex)) return [];
+      this.initialImmutableTraceSignatures.set(
+        traceIndex,
+        JSON.stringify(trace),
+      );
+      return [traceIndex];
+    });
     this.previousWidthDeficit = this.calculateWidthDeficit().deficit;
     this.obstacleIndex = new SpatialObstacleIndex(
       this.inputProblem,
@@ -269,6 +307,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         // The active clearance repair solver is stepped before the phase switch.
         break;
       case "complete":
+        this.acceptOwnershipCheckpoint(this.traces, "final");
         this.solved = true;
         break;
     }
@@ -342,12 +381,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private startCleanup() {
+    this.acceptOwnershipCheckpoint(this.traces, "expansion");
     this.traceIndex = this.traces.length;
     this.phase = "cleanup";
     const cleanupSolver = new PowerTraceCleanupSolver({
       simpleRouteJson: this.inputProblem,
       traces: this.traces,
-      traceIndices: this.traceOrder,
+      traceIndices: this.selectedOwnedTraceIndices,
+      viaRepairTraceIndices: this.selectedOwnedTraceIndices,
+      mutableTraceIndices: this.mutableBlockerTraceIndices,
       maxRerouteLength: 10,
       desiredPadClearance: this.options.powerTraceToPadClearance,
     });
@@ -991,20 +1033,36 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private adoptCleanupOutput(solver: PowerTraceCleanupSolver) {
-    this.traces = solver.getOutput();
-    this.cleanupCompleted = !solver.budgetLimited;
-    this.cleanupBestEffortAccepted = solver.budgetLimited;
-    const stats = solver.stats as Record<string, unknown>;
-    this.removedViaPairCount = Number(stats.viaPairCountRemoved ?? 0);
-    this.removedViaCount = Number(stats.viaCountRemoved ?? 0);
-    this.simplifiedPathCount = Number(stats.simplifiedPathCount ?? 0);
-    this.normalizedSegmentCount = Number(stats.normalizedSegmentCount ?? 0);
-    this.cleanupClearanceShoveCount = Number(
-      stats.committedClearanceShoveCount ?? 0,
+    const accepted = this.acceptOwnershipCheckpoint(
+      solver.getOutput(),
+      "cleanup",
     );
-    this.relocatedViaCount = Number(stats.relocatedViaCount ?? 0);
+    this.cleanupCompleted = !solver.budgetLimited;
+    this.cleanupBestEffortAccepted = solver.budgetLimited && accepted;
+    const stats = solver.stats as Record<string, unknown>;
+    this.cleanupMutatedTraceIndices = accepted
+      ? [...((stats.mutatedTraceIndices as number[] | undefined) ?? [])]
+      : [];
+    this.removedViaPairCount = accepted
+      ? Number(stats.viaPairCountRemoved ?? 0)
+      : 0;
+    this.removedViaCount = accepted ? Number(stats.viaCountRemoved ?? 0) : 0;
+    this.simplifiedPathCount = accepted
+      ? Number(stats.simplifiedPathCount ?? 0)
+      : 0;
+    this.normalizedSegmentCount = accepted
+      ? Number(stats.normalizedSegmentCount ?? 0)
+      : 0;
+    this.cleanupClearanceShoveCount = accepted
+      ? Number(stats.committedClearanceShoveCount ?? 0)
+      : 0;
+    this.relocatedViaCount = accepted
+      ? Number(stats.relocatedViaCount ?? 0)
+      : 0;
     this.unresolvedViaCount = Number(stats.unresolvedViaCount ?? 0);
-    this.padClearanceRerouteCount = Number(stats.padClearanceRerouteCount ?? 0);
+    this.padClearanceRerouteCount = accepted
+      ? Number(stats.padClearanceRerouteCount ?? 0)
+      : 0;
     this.unresolvedPadClearanceCount = Number(
       stats.unresolvedPadClearanceCount ?? 0,
     );
@@ -1032,7 +1090,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     const clearanceRepairSolver = new PowerTraceClearanceRepairSolver({
       simpleRouteJson: this.inputProblem,
       traces: this.traces,
-      traceIndices: this.traceOrder,
+      traceIndices: [
+        ...new Set([
+          ...this.selectedOwnedTraceIndices,
+          ...this.expansionPushedTraceIndices,
+          ...this.cleanupMutatedTraceIndices,
+        ]),
+      ],
     });
     clearanceRepairSolver.MAX_ITERATIONS = Math.min(
       clearanceRepairSolver.MAX_ITERATIONS,
@@ -1060,16 +1124,19 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private adoptClearanceRepairOutput(solver: PowerTraceClearanceRepairSolver) {
-    this.traces = solver.getOutput();
+    const accepted = this.acceptOwnershipCheckpoint(
+      solver.getOutput(),
+      "clearance-repair",
+    );
     this.clearanceRepairCompleted = !solver.budgetLimited;
-    this.clearanceRepairBestEffortAccepted = solver.budgetLimited;
+    this.clearanceRepairBestEffortAccepted = solver.budgetLimited && accepted;
     const stats = solver.stats as Record<string, unknown>;
-    this.repairedTraceClearanceSegmentCount = Number(
-      stats.repairedSegmentCount ?? 0,
-    );
-    this.repairedPadNeckSegmentCount = Number(
-      stats.repairedPadNeckSegmentCount ?? 0,
-    );
+    this.repairedTraceClearanceSegmentCount = accepted
+      ? Number(stats.repairedSegmentCount ?? 0)
+      : 0;
+    this.repairedPadNeckSegmentCount = accepted
+      ? Number(stats.repairedPadNeckSegmentCount ?? 0)
+      : 0;
     this.unresolvedTraceClearanceSegmentCount = Number(
       stats.unresolvedSegmentCount ?? 0,
     );
@@ -1343,6 +1410,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         traces: this.traces,
         powerTraceIndex: this.traceIndex,
         nominalPowerWidth: output.traceWidth,
+        mutableTraceIndices: this.mutableBlockerTraceIndices,
         corridor,
         maxRerouteLength: 10,
       },
@@ -1445,6 +1513,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         traces: this.traces,
         powerTraceIndex: this.traceIndex,
         nominalPowerWidth: targetWidth,
+        mutableTraceIndices: this.mutableBlockerTraceIndices,
         corridor,
         maxRerouteLength: 10,
       },
@@ -1548,6 +1617,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       if (output) {
         this.traces = output.traces;
         this.pushedTraceCount++;
+        this.expansionPushedTraceIndices.add(output.pushedTraceIndex);
         if (output.strategy === "elastic") this.elasticPushedTraceCount++;
         this.activeSubSolver = null;
         this.activeInflationKey = null;
@@ -2114,6 +2184,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       connection.name,
       connection.source_trace_id,
       connection.rootConnectionName,
+      connection.netConnectionName,
       ...(connection.mergedConnectionNames ?? []),
     ]
       .filter((name): name is string => Boolean(name))
@@ -2159,6 +2230,73 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     return -1;
   }
 
+  private getMutatedImmutableTraceIds(candidateTraces: SimplifiedPcbTrace[]) {
+    return this.immutableTraceIndices.flatMap((traceIndex) => {
+      const trace = candidateTraces[traceIndex];
+      return JSON.stringify(trace) ===
+        this.initialImmutableTraceSignatures.get(traceIndex)
+        ? []
+        : [
+            trace?.pcb_trace_id ??
+              this.traces[traceIndex]?.pcb_trace_id ??
+              String(traceIndex),
+          ];
+    });
+  }
+
+  private captureAndResetExpansionMutationStats() {
+    const mutationStats = {
+      recreatedTraceCount: this.recreatedTraceCount,
+      expandedSegmentCount: this.expandedSegmentCount,
+      intermediateExpandedSegmentCount: this.intermediateExpandedSegmentCount,
+      pathWidthUpgradeCount: this.pathWidthUpgradeCount,
+      reroutedSegmentCount: this.reroutedSegmentCount,
+      pushedTraceCount: this.pushedTraceCount,
+      elasticPushedTraceCount: this.elasticPushedTraceCount,
+      layerReroutedTraceCount: this.layerReroutedTraceCount,
+      insertedViaCount: this.insertedViaCount,
+      neckedLayerSegmentCount: this.neckedLayerSegmentCount,
+    };
+    this.recreatedTraceCount = 0;
+    this.expandedSegmentCount = 0;
+    this.intermediateExpandedSegmentCount = 0;
+    this.pathWidthUpgradeCount = 0;
+    this.reroutedSegmentCount = 0;
+    this.pushedTraceCount = 0;
+    this.elasticPushedTraceCount = 0;
+    this.layerReroutedTraceCount = 0;
+    this.insertedViaCount = 0;
+    this.neckedLayerSegmentCount = 0;
+    this.expansionPushedTraceIndices.clear();
+    return mutationStats;
+  }
+
+  private acceptOwnershipCheckpoint(
+    candidateTraces: SimplifiedPcbTrace[],
+    phase: OwnershipCheckpointPhase,
+  ) {
+    const mutatedIds = this.getMutatedImmutableTraceIds(candidateTraces);
+    if (mutatedIds.length === 0) {
+      this.traces = structuredClone(candidateTraces);
+      this.lastAcceptedTraces = structuredClone(candidateTraces);
+      return true;
+    }
+    this.immutableTraceMutationIds = [
+      ...new Set([...this.immutableTraceMutationIds, ...mutatedIds]),
+    ];
+    this.immutableSafetyRollbackCount++;
+    if (!this.immutableSafetyRollbackPhases.includes(phase)) {
+      this.immutableSafetyRollbackPhases.push(phase);
+    }
+    if (phase === "expansion") {
+      this.immutableSafetyRollbackMutationStats =
+        this.captureAndResetExpansionMutationStats();
+    }
+    this.traces = structuredClone(this.lastAcceptedTraces);
+    this.rebuildObstacleIndex();
+    return false;
+  }
+
   private rebuildObstacleIndex() {
     this.obstacleIndex = new SpatialObstacleIndex(
       this.inputProblem,
@@ -2199,6 +2337,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeInflationKey = null;
     this.activeInflationWidth = null;
     this.layerAttempt = null;
+    this.acceptOwnershipCheckpoint(this.traces, "final");
     this.traceIndex = this.traces.length;
     this.phase = "complete";
     this.rebuildObstacleIndex();
@@ -2251,6 +2390,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       cleanupClearanceShoveCount: this.cleanupClearanceShoveCount,
       relocatedViaCount: this.relocatedViaCount,
       unresolvedViaCount: this.unresolvedViaCount,
+      immutableTraceMutationIds: [...this.immutableTraceMutationIds],
+      immutableSafetyRollbackCount: this.immutableSafetyRollbackCount,
+      immutableSafetyRollbackPhases: [...this.immutableSafetyRollbackPhases],
+      immutableSafetyRollbackMutationStats:
+        this.immutableSafetyRollbackMutationStats === null
+          ? null
+          : { ...this.immutableSafetyRollbackMutationStats },
+      expansionPushedTraceIndices: [...this.expansionPushedTraceIndices],
+      cleanupMutatedTraceIndices: [...this.cleanupMutatedTraceIndices],
       padClearanceRerouteCount: this.padClearanceRerouteCount,
       unresolvedPadClearanceCount: this.unresolvedPadClearanceCount,
       repairedTraceClearanceSegmentCount:
@@ -2292,20 +2440,23 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       completionReason:
         this.phase !== "complete" && !this.solved
           ? null
-          : this.finalAcceptanceUsed
-            ? "total_iteration_budget"
-            : this.budgetLimitedExpansion
-              ? "expansion_budget"
-              : this.cleanupBestEffortAccepted
-                ? "cleanup_budget"
-                : this.clearanceRepairBestEffortAccepted
-                  ? "clearance_repair_budget"
-                  : "completed",
+          : this.immutableSafetyRollbackCount > 0
+            ? "immutable_safety_rollback"
+            : this.finalAcceptanceUsed
+              ? "total_iteration_budget"
+              : this.budgetLimitedExpansion
+                ? "expansion_budget"
+                : this.cleanupBestEffortAccepted
+                  ? "cleanup_budget"
+                  : this.clearanceRepairBestEffortAccepted
+                    ? "clearance_repair_budget"
+                    : "completed",
       resultStatus:
         this.finalAcceptanceUsed ||
         this.budgetLimitedExpansion ||
         this.cleanupBestEffortAccepted ||
-        this.clearanceRepairBestEffortAccepted
+        this.clearanceRepairBestEffortAccepted ||
+        this.immutableSafetyRollbackCount > 0
           ? "best_effort"
           : "complete",
       failedSubSolverCount: this.failedSubSolverCount,
@@ -2333,7 +2484,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   override getOutput(): PowerTraceExpanderOutput {
-    return this.traces;
+    return structuredClone(this.traces);
   }
 
   override visualize(): GraphicsObject {
