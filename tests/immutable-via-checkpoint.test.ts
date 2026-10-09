@@ -1,4 +1,9 @@
 import { expect, test } from "bun:test";
+import "bun-match-svg";
+import {
+  getSvgFromGraphicsObject,
+  stackGraphicsHorizontally,
+} from "graphics-debug";
 import { simplifiedCases } from "../fixtures/simplified-cases";
 import {
   PowerTraceCleanupSolver,
@@ -85,7 +90,7 @@ test("rejects a new collider even when an immutable via already has a violation"
   expect(solver.getOutput()).toEqual(original);
 });
 
-test("rejects a replacement collider when the total violation count stays equal", () => {
+test("rejects a replacement collider when the total violation count stays equal", async () => {
   const input = inputWithImmutableVia();
   input.traces![0]!.route = [wire(-2, 2), wire(-1, 0), wire(1, 0), wire(2, 2)];
   input.connections.push({
@@ -119,6 +124,68 @@ test("rejects a replacement collider when the total violation count stays equal"
   expect(solver.immutableViaViolationRegressionIds.length).toBeGreaterThan(0);
   expect(solver.connectivityRollbackCount).toBe(0);
   expect(solver.getOutput()).toEqual(original);
+
+  const panels = [original, candidate, solver.getOutput()].map(
+    (traces, index) => ({
+      coordinateSystem: "cartesian" as const,
+      lines: traces.flatMap((trace, traceIndex) =>
+        trace.route.flatMap((start, pointIndex) => {
+          const end = trace.route[pointIndex + 1];
+          if (start.route_type !== "wire" || end?.route_type !== "wire")
+            return [];
+          return [
+            {
+              points: [start, end],
+              strokeWidth: start.width,
+              strokeColor: ["#2563eb", "#64748b", "#dc2626"][traceIndex],
+              strokeDash: start.layer === "bottom" ? "0.08 0.08" : undefined,
+            },
+          ];
+        }),
+      ),
+      circles: traces.flatMap((trace) =>
+        trace.route.flatMap((point) =>
+          point.route_type === "via"
+            ? [
+                {
+                  center: point,
+                  radius: point.via_diameter! / 2,
+                  fill: "#fbbf24",
+                  stroke: "#92400e",
+                },
+              ]
+            : [],
+        ),
+      ),
+      texts: [
+        "Blue: POWER; red: SECOND; gold: imported via",
+        index === 1
+          ? "New SECOND collider replaces POWER"
+          : "Existing POWER collision remains",
+        `Affected vias: ${index === 1 ? solver.attemptedImmutableViaViolationCount : solver.initialImmutableViaViolationCount}; violation pairs: ${index === 1 ? solver.attemptedImmutableViaViolationPairCount : solver.initialImmutableViaViolationPairCount}`,
+        index === 1
+          ? "Equal counts hide a different offending object"
+          : index === 2
+            ? "New collision signature triggers rollback"
+            : "Baseline debt does not permit new collisions",
+      ].map((text, row) => ({
+        x: -2.4,
+        y: -2.6 - row * 0.5,
+        text,
+        fontSize: 0.22,
+        anchorSide: "center_left" as const,
+        color: "#334155",
+      })),
+    }),
+  );
+  await expect(
+    getSvgFromGraphicsObject(
+      stackGraphicsHorizontally(panels, {
+        titles: ["Accepted input", "Rejected replacement", "Accepted output"],
+      }),
+      { backgroundColor: "white", svgWidth: 1500, svgHeight: 650 },
+    ).replace(/[ \t]+$/gm, ""),
+  ).toMatchSvgSnapshot(import.meta.path);
 });
 
 test("preserves existing immutable-via debt and counts opaque IDs independently", () => {
