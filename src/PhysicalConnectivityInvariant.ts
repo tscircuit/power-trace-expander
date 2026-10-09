@@ -5,6 +5,7 @@ import {
   type PhysicalConnectivitySplit as PhysicalConnectivityRegression,
 } from "circuit-json-to-connectivity-map";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
+import { getBoardLayers } from "./SpatialObstacleIndex";
 import type {
   Obstacle,
   PowerTraceExpanderInput,
@@ -168,7 +169,16 @@ export const capturePhysicalConnectivity = (
       return {
         pcb_trace_id: trace.pcb_trace_id,
         netName: netNames[0]!,
-        route: trace.route,
+        // Match this solver's through-via policy; supplied physical spans take
+        // precedence over routing transition layers.
+        route: trace.route.map((point) =>
+          point.route_type === "via"
+            ? {
+                ...point,
+                layers: point.layers ?? getBoardLayers(inputProblem.layerCount),
+              }
+            : point,
+        ),
       };
     },
   );

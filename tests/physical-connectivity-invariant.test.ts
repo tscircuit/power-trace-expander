@@ -204,3 +204,38 @@ test("completed solver output cannot mutate the validated checkpoint", () => {
   expect(secondOutput).not.toBe(firstOutput);
   expect(secondOutput[0]?.route[0]).toMatchObject({ x: -1 });
 });
+
+test("normalizes through-via copper independently of the routing transition", () => {
+  const input = baseProblem([
+    { x: -1, y: 0, layer: "top" },
+    { x: 1, y: 0, layer: "inner1" },
+    { x: 0.45, y: 0, layer: "bottom" },
+  ]);
+  input.layerCount = 4;
+  const route: SimplifiedPcbTrace[] = [
+    trace("via", [
+      wire(-1, 0),
+      wire(0, 0),
+      {
+        route_type: "via",
+        x: 0,
+        y: 0,
+        from_layer: "top",
+        to_layer: "inner1",
+        via_diameter: 1,
+      },
+      wire(0, 0, 0.1, "inner1"),
+      wire(1, 0, 0.1, "inner1"),
+    ]),
+  ];
+  expect(capturePhysicalConnectivity(input, route).endpointComponents).toEqual([
+    ["0:0", "0:1", "0:2"],
+  ]);
+  const via = route[0]!.route[2]!;
+  if (via.route_type !== "via") throw new Error("Expected via");
+  via.layers = ["top", "inner1"];
+  expect(capturePhysicalConnectivity(input, route).endpointComponents).toEqual([
+    ["0:0", "0:1"],
+    ["0:2"],
+  ]);
+});

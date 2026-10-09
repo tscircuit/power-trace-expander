@@ -16,6 +16,8 @@ export type ViaRoutePoint = {
   from_layer: string;
   via_diameter?: number;
   via_hole_diameter?: number;
+  /** Explicit physical copper layers, when supplied by the routing input. */
+  layers?: string[];
 };
 
 export type SimplifiedPcbTrace = {

@@ -22,7 +22,7 @@ type ConnectedPad = {
   canonicalConnectionNames: ReadonlySet<string>;
 };
 
-const getBoardLayers = (layerCount: number) => [
+export const getBoardLayers = (layerCount: number) => [
   "top",
   ...Array.from(
     { length: Math.max(0, layerCount - 2) },
