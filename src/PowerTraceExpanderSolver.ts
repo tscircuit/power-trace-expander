@@ -155,6 +155,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   cleanupClearanceShoveCount = 0;
   relocatedViaCount = 0;
   unresolvedViaCount = 0;
+  initialImmutableViaViolationCount = 0;
+  remainingImmutableViaViolationCount = 0;
+  initialImmutableViaViolationPairCount = 0;
+  remainingImmutableViaViolationPairCount = 0;
+  private lastSafeImmutableViaViolationSignatures = new Set<string>();
+  immutableViaViolationRollbackCount = 0;
+  attemptedImmutableViaViolationCount: number | null = null;
+  attemptedImmutableViaViolationPairCount: number | null = null;
+  immutableViaViolationRegressionIds: string[] = [];
   padClearanceRerouteCount = 0;
   unresolvedPadClearanceCount = 0;
   repairedTraceClearanceSegmentCount = 0;
@@ -277,6 +286,18 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       [],
       this.connectionNameResolver,
     );
+    const initialImmutableViaViolations =
+      this.getImmutableViaViolationSignatures(this.traces);
+    this.lastSafeImmutableViaViolationSignatures =
+      initialImmutableViaViolations.signatures;
+    this.initialImmutableViaViolationCount =
+      initialImmutableViaViolations.violatingViaCount;
+    this.remainingImmutableViaViolationCount =
+      this.initialImmutableViaViolationCount;
+    this.initialImmutableViaViolationPairCount =
+      this.lastSafeImmutableViaViolationSignatures.size;
+    this.remainingImmutableViaViolationPairCount =
+      this.initialImmutableViaViolationPairCount;
     this.activeSubSolver = null;
     this.MAX_ITERATIONS = TOTAL_ITERATION_BUDGET;
     this.stats = this.createStats();
@@ -2498,6 +2519,65 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     });
   }
 
+  private getImmutableViaViolationSignatures(
+    candidateTraces: SimplifiedPcbTrace[],
+  ) {
+    const violationSignatures = new Set<string>();
+    let violatingViaCount = 0;
+    if (this.immutableTraceIndices.length === 0) {
+      return { signatures: violationSignatures, violatingViaCount };
+    }
+    const resolver = new ConnectionNameResolver(
+      this.inputProblem,
+      candidateTraces,
+    );
+    const index = new SpatialObstacleIndex(
+      this.inputProblem,
+      candidateTraces,
+      undefined,
+      [],
+      resolver,
+    );
+    for (const traceIndex of this.immutableTraceIndices) {
+      const trace = candidateTraces[traceIndex];
+      if (!trace) continue;
+      const connectionNames = [
+        trace.pcb_trace_id,
+        trace.connection_name,
+        trace.source_trace_id,
+        trace.rootConnectionName,
+        ...(trace.mergedConnectionNames ?? []),
+        ...(trace.connectsTo ?? []),
+      ].filter((name): name is string => Boolean(name));
+      for (let routeIndex = 0; routeIndex < trace.route.length; routeIndex++) {
+        const point = trace.route[routeIndex];
+        if (point?.route_type !== "via") continue;
+        const viaId = `${trace.pcb_trace_id}:${routeIndex}`;
+        const signatures = index.getViaViolationSignatures({
+          point,
+          layers: index.boardLayers,
+          padDiameter:
+            point.via_diameter ??
+            this.inputProblem.min_via_pad_diameter ??
+            this.inputProblem.minViaPadDiameter ??
+            this.inputProblem.minViaDiameter ??
+            0.6,
+          holeDiameter: point.via_hole_diameter ?? index.defaultViaHoleDiameter,
+          connectionNames,
+          ignoreTraceIndex: traceIndex,
+          ignoreRouteRange: { start: routeIndex, end: routeIndex },
+          blockSameNetObstacles: true,
+          sameNetObstacleClearance: 0,
+        });
+        if (signatures.size > 0) violatingViaCount++;
+        for (const signature of signatures) {
+          violationSignatures.add(`${viaId}|${signature}`);
+        }
+      }
+    }
+    return { signatures: violationSignatures, violatingViaCount };
+  }
+
   private captureAndResetExpansionMutationStats() {
     const mutationStats = {
       recreatedTraceCount: this.recreatedTraceCount,
@@ -2530,10 +2610,34 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     phase: OwnershipCheckpointPhase,
   ) {
     const mutatedIds = this.getMutatedImmutableTraceIds(candidateTraces);
-    if (mutatedIds.length === 0) {
+    const viaViolations =
+      this.getImmutableViaViolationSignatures(candidateTraces);
+    const newViaViolations = [...viaViolations.signatures].filter(
+      (signature) =>
+        !this.lastSafeImmutableViaViolationSignatures.has(signature),
+    );
+    if (mutatedIds.length === 0 && newViaViolations.length === 0) {
       this.traces = structuredClone(candidateTraces);
       this.lastAcceptedTraces = structuredClone(candidateTraces);
+      this.lastSafeImmutableViaViolationSignatures = viaViolations.signatures;
+      this.remainingImmutableViaViolationCount =
+        viaViolations.violatingViaCount;
+      this.remainingImmutableViaViolationPairCount =
+        viaViolations.signatures.size;
       return true;
+    }
+    if (newViaViolations.length > 0) {
+      this.immutableViaViolationRollbackCount++;
+      this.attemptedImmutableViaViolationCount =
+        viaViolations.violatingViaCount;
+      this.attemptedImmutableViaViolationPairCount =
+        viaViolations.signatures.size;
+      this.immutableViaViolationRegressionIds = [
+        ...new Set([
+          ...this.immutableViaViolationRegressionIds,
+          ...newViaViolations,
+        ]),
+      ];
     }
     this.immutableTraceMutationIds = [
       ...new Set([...this.immutableTraceMutationIds, ...mutatedIds]),
@@ -2692,6 +2796,23 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       cleanupClearanceShoveCount: this.cleanupClearanceShoveCount,
       relocatedViaCount: this.relocatedViaCount,
       unresolvedViaCount: this.unresolvedViaCount,
+      initialImmutableViaViolationCount: this.initialImmutableViaViolationCount,
+      remainingImmutableViaViolationCount:
+        this.remainingImmutableViaViolationCount,
+      initialImmutableViaViolationPairCount:
+        this.initialImmutableViaViolationPairCount,
+      remainingImmutableViaViolationPairCount:
+        this.remainingImmutableViaViolationPairCount,
+      skippedImmutableViaRepairCount: this.remainingImmutableViaViolationCount,
+      immutableViaViolationRollbackCount:
+        this.immutableViaViolationRollbackCount,
+      attemptedImmutableViaViolationCount:
+        this.attemptedImmutableViaViolationCount,
+      attemptedImmutableViaViolationPairCount:
+        this.attemptedImmutableViaViolationPairCount,
+      immutableViaViolationRegressionIds: [
+        ...this.immutableViaViolationRegressionIds,
+      ],
       immutableTraceMutationIds: [...this.immutableTraceMutationIds],
       padClearanceRerouteCount: this.padClearanceRerouteCount,
       unresolvedPadClearanceCount: this.unresolvedPadClearanceCount,
@@ -2782,7 +2903,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
                       ? "cleanup_budget"
                       : this.clearanceRepairBestEffortAccepted
                         ? "clearance_repair_budget"
-                        : "completed",
+                        : this.remainingImmutableViaViolationCount > 0
+                          ? "immutable_via_violations_preserved"
+                          : "completed",
       resultStatus:
         this.finalAcceptanceUsed ||
         this.budgetLimitedExpansion ||
@@ -2790,7 +2913,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         this.clearanceRepairBestEffortAccepted ||
         this.connectivityRollbackCount > 0 ||
         this.immutableSafetyRollbackCount > 0 ||
-        this.connectivityValidationError !== null
+        this.connectivityValidationError !== null ||
+        this.remainingImmutableViaViolationCount > 0
           ? "best_effort"
           : "complete",
       failedSubSolverCount: this.failedSubSolverCount,

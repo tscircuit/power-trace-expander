@@ -62,6 +62,11 @@ otherwise-unmatched child route does not inherit a board-level connection's
 nominal width. This keeps imported internal routing byte-for-byte while still
 allowing a connected board trace to enter its pads, vias, and boundary copper.
 
+Phase checkpoints also preserve existing via-clearance debt on imported
+immutable routes. Every rule/collider signature must exist in the last accepted
+result; equal violation counts alone cannot establish safety. A new violation
+rolls back the phase, while preserved debt is reported as `best_effort`.
+
 Physical copper contact and terminal-component comparison come from
 `circuit-json-to-connectivity-map`; the solver adapts SRJ aliases and owns rollback.
 Expansion, cleanup, clearance repair, and final acceptance preserve the last
