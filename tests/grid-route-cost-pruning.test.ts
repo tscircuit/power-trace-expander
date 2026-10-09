@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
+import "bun-match-svg";
+import {
+  getSvgFromGraphicsObject,
+  stackGraphicsHorizontally,
+  type GraphicsObject,
+} from "graphics-debug";
 import { ObstacleAwareGridRouteSolver } from "../src/ObstacleAwareGridRouteSolver";
 import { SpatialObstacleIndex } from "../src/SpatialObstacleIndex";
 import type { CollisionQuery, PowerTraceExpanderInput } from "../src/types";
 
-test("prunes non-improving grid moves while preserving ordinary and off-grid octilinear routes", () => {
+test("prunes non-improving grid moves while preserving ordinary and off-grid octilinear routes", async (): Promise<void> => {
   const input: PowerTraceExpanderInput = {
     bounds: { minX: -2, minY: -3, maxX: 7, maxY: 3 },
     layerCount: 1,
@@ -25,6 +31,7 @@ test("prunes non-improving grid moves while preserving ordinary and off-grid oct
       octilinear: false,
       offset: 0,
       iterations: 173,
+      baselineCollisionChecks: 782,
       points: [
         [0.03, -0.02],
         [2, 1.25],
@@ -36,6 +43,7 @@ test("prunes non-improving grid moves while preserving ordinary and off-grid oct
       octilinear: false,
       offset: 0.125,
       iterations: 239,
+      baselineCollisionChecks: 977,
       points: [
         [0.03, -0.02],
         [2.125, -1.375],
@@ -47,6 +55,7 @@ test("prunes non-improving grid moves while preserving ordinary and off-grid oct
       octilinear: true,
       offset: 0,
       iterations: 182,
+      baselineCollisionChecks: 744,
       points: [
         [0.03, -0.02],
         [0.03, -0.03],
@@ -68,6 +77,7 @@ test("prunes non-improving grid moves while preserving ordinary and off-grid oct
       octilinear: true,
       offset: 0.125,
       iterations: 249,
+      baselineCollisionChecks: 942,
       points: [
         [0.03, -0.02],
         [0.23, -0.02],
@@ -85,6 +95,8 @@ test("prunes non-improving grid moves while preserving ordinary and off-grid oct
       ],
     },
   ];
+  const panels: GraphicsObject[] = [];
+  const titles: string[] = [];
   for (const fixture of cases) {
     const obstacleIndex = new SpatialObstacleIndex(input, []);
     const collides = obstacleIndex.collides.bind(obstacleIndex);
@@ -115,7 +127,45 @@ test("prunes non-improving grid moves while preserving ordinary and off-grid oct
     expect(solver.getOutput()?.points).toEqual(
       fixture.points.map(([x, y]) => ({ x, y })),
     );
-    // The original search used 744–977 collision checks on these same paths.
+    // Baseline counts were measured with main's original loop on these exact
+    // cases. The snapshot draws the actual output and measured work; the
+    // assertions above independently require the unchanged golden route.
     expect(collisionChecks).toBeLessThan(520);
+    const graphic = solver.visualize();
+    panels.push({
+      ...graphic,
+      rects: [
+        ...graphic.rects!,
+        ...input.obstacles.map((obstacle) => ({
+          center: obstacle.center,
+          width: obstacle.width,
+          height: obstacle.height,
+          fill: "rgba(100,116,139,0.2)",
+          stroke: "#475569",
+        })),
+      ],
+      texts: [
+        `Collision checks: ${fixture.baselineCollisionChecks} -> ${collisionChecks}`,
+        `Same route and ${solver.iterations} iterations`,
+        fixture.octilinear
+          ? "Off-grid connector keeps its actual cost"
+          : "Skip copper checks for non-improving moves",
+      ].map((text, index) => ({
+        x: input.bounds.minX,
+        y: input.bounds.minY - 0.5 - index * 0.45,
+        text,
+        fontSize: 0.25,
+        anchorSide: "center_left" as const,
+        color: "#334155",
+      })),
+    });
+    titles.push(
+      `${fixture.octilinear ? "Octilinear" : "Ordinary"}; offset ${fixture.offset}`,
+    );
   }
+  const svg = getSvgFromGraphicsObject(
+    stackGraphicsHorizontally(panels, { titles }),
+    { backgroundColor: "white", svgWidth: 1600, svgHeight: 420 },
+  ).replace(/[ \t]+$/gm, "");
+  await expect(svg).toMatchSvgSnapshot(import.meta.path);
 });
