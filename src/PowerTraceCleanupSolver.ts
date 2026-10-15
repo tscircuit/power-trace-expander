@@ -1416,10 +1416,13 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     const trace = this.traces[candidate.traceIndex]!;
     const originalStart = trace.route[candidate.startIndex];
     const originalEnd = trace.route[candidate.endIndex];
-    const startWidth =
-      segmentIndex === 0 && isWire(originalStart)
-        ? originalStart.width
-        : candidate.width;
+    let startWidth = candidate.width;
+    if (segmentIndex === 0 && isWire(originalStart)) {
+      startWidth = originalStart.width;
+      if (candidate.startIndex === 0) {
+        startWidth = Math.max(startWidth, candidate.width);
+      }
+    }
     const endWidth =
       segmentIndex === candidate.points.length - 2 && isWire(originalEnd)
         ? originalEnd.width
@@ -1479,29 +1482,35 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     clearancePadding: number,
   ) {
     const trace = this.traces[candidate.traceIndex]!;
-    const originalStart = trace.route[candidate.startIndex] as WireRoutePoint;
-    const originalEnd = trace.route[candidate.endIndex] as WireRoutePoint;
+    const originalStart = trace.route[candidate.startIndex];
+    const originalEnd = trace.route[candidate.endIndex];
+    if (!isWire(originalStart) || !isWire(originalEnd)) {
+      throw new Error("Cleanup candidate endpoints must be wire points");
+    }
+    let startWidth = originalStart.width;
+    if (candidate.startIndex === 0) {
+      startWidth = Math.max(startWidth, candidate.width);
+    }
     const replacement: WireRoutePoint[] = candidate.points.map(
-      (point, index) => ({
-        ...(index === 0
-          ? originalStart
-          : index === candidate.points.length - 1
-            ? originalEnd
-            : {
-                route_type: "wire" as const,
-                layer: candidate.layer,
-                width: candidate.width,
-              }),
-        x: point.x,
-        y: point.y,
-        layer: candidate.layer,
-        width:
-          index === 0
-            ? originalStart.width
-            : index === candidate.points.length - 1
-              ? originalEnd.width
-              : candidate.width,
-      }),
+      (point, index) => {
+        let originalPoint: WireRoutePoint | undefined;
+        let width = candidate.width;
+        if (index === 0) {
+          originalPoint = originalStart;
+          width = startWidth;
+        } else if (index === candidate.points.length - 1) {
+          originalPoint = originalEnd;
+          width = originalEnd.width;
+        }
+        return {
+          ...originalPoint,
+          route_type: "wire",
+          x: point.x,
+          y: point.y,
+          layer: candidate.layer,
+          width,
+        };
+      },
     );
     const removedRoute = trace.route.slice(
       candidate.startIndex,
