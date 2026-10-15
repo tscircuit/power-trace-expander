@@ -43,8 +43,10 @@ test("receiver full-board power expansion terminal neck", async () => {
   const wires = escape!.route
     .filter((point) => point.route_type === "wire")
     .filter((point) => point.layer === "top");
-  // Known failing baseline: cleanup retains the old narrow terminal width.
-  expect(wires[0]!.width).toBe(0.15);
+  expect(wires[0]!.width).toBeCloseTo(0.7500112, 6);
+  expect(wires[1]!.y - wires[0]!.y).toBeCloseTo(0.3750056, 5);
+  expect(wires[2]!.width).toBe(1);
+  expect(wires[3]!.width).toBe(1);
 
   const graphics = getPowerTraceGraphics({
     problem: input,
