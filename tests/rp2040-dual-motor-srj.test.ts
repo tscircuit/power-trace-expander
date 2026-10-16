@@ -207,7 +207,7 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   expect(solver.simplifiedPathCount).toBeGreaterThanOrEqual(40);
   expect(solver.normalizedSegmentCount).toBeGreaterThanOrEqual(60);
   expect(solver.cleanupClearanceShoveCount).toBeGreaterThan(0);
-  expect(solver.relocatedViaCount).toBe(0);
+  expect(solver.relocatedViaCount).toBeGreaterThanOrEqual(2);
   expect(solver.unresolvedViaCount).toBe(0);
   expect(solver.stats).toMatchObject({
     completionReason: "immutable_via_violations_preserved",

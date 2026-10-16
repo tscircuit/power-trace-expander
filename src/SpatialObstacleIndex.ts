@@ -24,7 +24,6 @@ type ConnectedPad = {
 };
 
 type ConnectionNames = IndexedObstacle["connectionNames"];
-const SHARED_VIA_POSITION_TOLERANCE = 1e-9;
 
 const getBoardLayers = (layerCount: number) => [
   "top",
@@ -646,20 +645,6 @@ export class SpatialObstacleIndex {
       seenTraceRoutePairs.add(key);
       const existingHoleDiameter =
         item.viaHoleDiameter ?? this.defaultViaHoleDiameter;
-      // Several same-net branches can reference the same physical through drill.
-      if (
-        Math.abs(item.exactShape.center.x - query.point.x) <=
-          SHARED_VIA_POSITION_TOLERANCE &&
-        Math.abs(item.exactShape.center.y - query.point.y) <=
-          SHARED_VIA_POSITION_TOLERANCE &&
-        existingHoleDiameter === query.holeDiameter &&
-        query.layers.every((layer) => item.layers.includes(layer)) &&
-        this.connectionNameResolver.canonicalize(query.connectionNames).some(
-          (name) => this.connectionNameSets[itemIndex]!.has(name),
-        )
-      ) {
-        continue;
-      }
       const minimumSpacing =
         query.holeDiameter / 2 +
         existingHoleDiameter / 2 +
