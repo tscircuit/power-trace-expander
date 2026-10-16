@@ -76,7 +76,7 @@ export const distanceSegmentToSegment = (
   );
 };
 
-const pointInPolygon = (point: Point, polygon: Point[]) => {
+export const pointInPolygon = (point: Point, polygon: Point[]): boolean => {
   let inside = false;
   for (
     let index = 0, previousIndex = polygon.length - 1;

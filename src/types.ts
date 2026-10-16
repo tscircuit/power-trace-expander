@@ -86,6 +86,7 @@ export type Obstacle = {
 };
 
 export type SimpleRouteJson = {
+  outline?: Point[];
   layerCount: number;
   minTraceWidth: number;
   nominalTraceWidth?: number;
