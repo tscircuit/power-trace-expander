@@ -6,6 +6,7 @@ import {
   distancePointToSegment,
   distanceSegmentToPolygon,
   distanceSegmentToSegment,
+  pointInPolygon,
   segmentIntersectsRect,
 } from "./geometry";
 import type {
@@ -44,6 +45,8 @@ export class SpatialObstacleIndex {
   readonly minViaHoleEdgeToViaHoleEdgeClearance: number;
   readonly defaultViaHoleDiameter: number;
   readonly bounds: SimpleRouteJson["bounds"];
+  private readonly outline?: SimpleRouteJson["outline"];
+  private readonly outlineBoundaryIndex?: Flatbush;
   private readonly maxIndexedViaHoleDiameter: number;
   private readonly index: Flatbush | null;
   private readonly connectionNameSets: ReadonlySet<string>[];
@@ -63,6 +66,19 @@ export class SpatialObstacleIndex {
     ),
   ) {
     this.bounds = simpleRouteJson.bounds;
+    this.outline = simpleRouteJson.outline;
+    if (this.outline && this.outline.length >= 3) {
+      this.outlineBoundaryIndex = new Flatbush(this.outline.length);
+      for (let index = 0; index < this.outline.length; index++) {
+        const start = this.outline[index]!;
+        const end = this.outline[(index + 1) % this.outline.length]!;
+        this.outlineBoundaryIndex.add(
+          Math.min(start.x, end.x), Math.min(start.y, end.y),
+          Math.max(start.x, end.x), Math.max(start.y, end.y),
+        );
+      }
+      this.outlineBoundaryIndex.finish();
+    }
     this.boardLayers = getBoardLayers(simpleRouteJson.layerCount);
     this.dynamicTraceIndex = dynamicTraceIndex;
     this.clearance = Math.max(
@@ -859,11 +875,31 @@ export class SpatialObstacleIndex {
 
   private isOutsideBounds(query: CollisionQuery) {
     const radius = query.width / 2 + this.boardEdgeClearance;
-    return (
+    if (
       Math.min(query.start.x, query.end.x) - radius < this.bounds.minX ||
       Math.max(query.start.x, query.end.x) + radius > this.bounds.maxX ||
       Math.min(query.start.y, query.end.y) - radius < this.bounds.minY ||
       Math.max(query.start.y, query.end.y) + radius > this.bounds.maxY
+    ) {
+      return true;
+    }
+    if (!this.outline || !this.outlineBoundaryIndex) return false;
+    if (!pointInPolygon(query.start, this.outline)) return true;
+    const boundaryEdges = this.outlineBoundaryIndex.search(
+      Math.min(query.start.x, query.end.x) - radius,
+      Math.min(query.start.y, query.end.y) - radius,
+      Math.max(query.start.x, query.end.x) + radius,
+      Math.max(query.start.y, query.end.y) + radius,
     );
+    for (const index of boundaryEdges) {
+      if (distanceSegmentToSegment(
+        query.start, query.end,
+        this.outline[index]!,
+        this.outline[(index + 1) % this.outline.length]!,
+      ) < radius) {
+        return true;
+      }
+    }
+    return false;
   }
 }
