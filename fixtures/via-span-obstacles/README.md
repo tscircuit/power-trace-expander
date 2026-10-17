@@ -1,0 +1,22 @@
+# Via-span obstacle reproduction
+
+One straight 0.1 mm power trace requests expansion to 0.8 mm. One immutable 0.3 mm via belongs to a different net and does not occupy the power trace's layer.
+
+- **Endpoint span:** the via declares `top` to `inner2` on a four-layer board; the power trace is on `bottom`.
+- **Reversed endpoints:** the same via declares `inner2` to `top`; the power trace is again on `bottom`.
+
+Both current outputs unnecessarily bend the power trace because the obstacle index puts every via on every layer. The snapshots deliberately capture this incorrect behavior. This reproduction changes no production source; the subsequent fix PR should update the assertions and these same snapshots.
+
+Each panel is one board layer. Amber circles show **the actual obstacle index's via geometry**, including its erroneous extra layers. Blue is the solver's expanded output at its physical width; the gray dashed line is the input centerline. The declared via layers are printed above the panels.
+
+Run the reproductions with:
+
+```sh
+bun test tests/via-span-endpoints-reproduction.test.ts tests/via-span-reversed-reproduction.test.ts --timeout 9999999
+```
+
+Open `via-span-obstacles/via-span-obstacles` in the solver debugger for interactive views of both cases.
+
+![Endpoint span](../../tests/__snapshots__/via-span-endpoints-reproduction.snap.svg)
+
+![Reversed endpoints](../../tests/__snapshots__/via-span-reversed-reproduction.snap.svg)
