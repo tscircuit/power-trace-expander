@@ -96,6 +96,7 @@ export type SimpleRouteJson = {
   min_via_pad_diameter?: number;
   defaultObstacleMargin?: number;
   minTraceToPadEdgeClearance?: number;
+  minViaEdgeToPadEdgeClearance?: number;
   minPadEdgeToPadEdgeClearance?: number;
   minTraceToHoleEdgeClearance?: number;
   minBoardEdgeClearance?: number;
