@@ -1,6 +1,7 @@
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
+import { canRerouteWholeTrace } from "./canRerouteWholeTrace";
 import {
   clamp,
   distance,
@@ -40,6 +41,7 @@ type SolverPhase =
 type RouteInterval = { startIndex: number; endIndex: number };
 
 type LayerRouteAttempt = {
+  wholeTrace: boolean;
   interval: RouteInterval;
   minViaCount: number;
   maxViaCount: number;
@@ -76,6 +78,7 @@ const TOTAL_ITERATION_BUDGET = 8_000_000;
 const FINALIZATION_ITERATION_RESERVE_FRACTION = 1 / 8;
 const CLEANUP_SHARE_OF_FINALIZATION_BUDGET = 3 / 4;
 const MAX_RETAINED_FAILED_SUBSOLVERS = 16;
+const MAX_LAYER_ROUTE_VIAS = 2;
 
 const uniqueDescending = (values: number[]) =>
   [...new Set(values.map((value) => Number(value.toFixed(6))))].sort(
@@ -94,6 +97,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private readonly connectionNameResolver: ConnectionNameResolver;
   private readonly traceOrder: number[];
   private traceOrderCursor = -1;
+  private recoveringWholeTraces = false;
   private readonly maxPassCount = 4;
   private previousWidthDeficit = 0;
   passIndex = 0;
@@ -279,6 +283,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.traceOrderCursor++;
     this.routeSegmentIndex = 0;
     if (this.traceOrderCursor >= this.traceOrder.length) {
+      if (this.recoveringWholeTraces) {
+        this.startCleanup();
+        return;
+      }
       this.finishOrStartNextPass();
       return;
     }
@@ -289,18 +297,23 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       // Preserved child-subcircuit traces are supplied as fixed routing
       // geometry but have no connection in the current board SRJ. Re-emit them
       // byte-for-byte and use them only as obstacles for board-level traces.
-      this.keptTraceCount++;
+      if (!this.recoveringWholeTraces) this.keptTraceCount++;
       return;
     }
     this.nominalTraceWidth = this.resolveNominalTraceWidth(trace);
     if (this.traceMeetsNominalWidth(trace, this.nominalTraceWidth)) {
-      this.keptTraceCount++;
+      if (!this.recoveringWholeTraces) this.keptTraceCount++;
       return;
     }
 
     // Flatbush is immutable, so rebuild once per trace that will actually be
     // mutated. Fixed and already-conforming traces need no private index.
     this.rebuildObstacleIndex();
+
+    if (this.recoveringWholeTraces) {
+      this.prepareWholeTraceRouteAttempt(trace);
+      return;
+    }
 
     trace.route = splitUnderWidthWireSegments(
       trace.route,
@@ -338,7 +351,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return;
     }
 
-    this.startCleanup();
+    // Local intervals can freeze a narrow endpoint. Try the real terminals
+    // once before cleanup, while keeping all surrounding copper fixed.
+    this.recoveringWholeTraces = true;
+    this.traceOrderCursor = -1;
+    this.phase = "scan-trace";
   }
 
   private startCleanup() {
@@ -632,12 +649,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       ),
     );
     const softTraceIndices = this.getSoftTraceIndices(this.nominalTraceWidth);
+    let maximumViaCount = 0;
+    if (canUseVias) maximumViaCount = MAX_LAYER_ROUTE_VIAS;
 
     this.layerAttemptCountByTrace.set(this.traceIndex, priorAttemptCount + 1);
     this.layerAttempt = {
+      wholeTrace: false,
       interval,
       minViaCount: canUseVias ? 1 : 0,
-      maxViaCount: canUseVias ? 2 : 0,
+      maxViaCount: maximumViaCount,
       candidateWidths: [this.nominalTraceWidth],
       widthCursor: 0,
       gridResolutions: [clamp(this.nominalTraceWidth / 4, 0.2, 0.3)],
@@ -698,6 +718,44 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     return indices;
   }
 
+  private prepareWholeTraceRouteAttempt(trace: SimplifiedPcbTrace): void {
+    const connection = this.findConnectionForTrace(trace);
+    if (!connection) return;
+    if (
+      !canRerouteWholeTrace({
+        trace,
+        connection,
+        nominalTraceWidth: this.nominalTraceWidth,
+        traces: this.traces,
+        inputProblem: this.inputProblem,
+        connectionNameResolver: this.connectionNameResolver,
+      })
+    ) {
+      return;
+    }
+    const start = trace.route[0];
+    const end = trace.route.at(-1);
+    if (!isWire(start) || !isWire(end)) return;
+    const connectionNames = this.getTraceConnectionNames(trace);
+    this.layerAttempt = {
+      wholeTrace: true,
+      interval: { startIndex: 0, endIndex: trace.route.length - 1 },
+      minViaCount: 0,
+      maxViaCount: 0,
+      candidateWidths: [this.nominalTraceWidth],
+      widthCursor: 0,
+      gridResolutions: this.getGridResolutions(this.nominalTraceWidth),
+      resolutionCursor: 0,
+      offsetCursor: 0,
+      startLayers: this.getEndpointLayers(start, connectionNames),
+      endLayers: this.getEndpointLayers(end, connectionNames),
+      startNeckWidth: this.nominalTraceWidth,
+      endNeckWidth: this.nominalTraceWidth,
+      softTraceIndices: [],
+    };
+    this.phase = "try-layer-candidate";
+  }
+
   private startNextLayerCandidate() {
     const attempt = this.layerAttempt;
     const trace = this.traces[this.traceIndex];
@@ -707,6 +765,24 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return;
     }
     if (attempt.widthCursor >= attempt.candidateWidths.length) {
+      if (attempt.wholeTrace) {
+        let maximumViaCount = MAX_LAYER_ROUTE_VIAS;
+        if (this.options.allowNewVias === false) {
+          maximumViaCount = Math.min(
+            maximumViaCount,
+            trace.route.filter((point) => point.route_type === "via").length,
+          );
+        }
+        if (attempt.maxViaCount === 0 && maximumViaCount > 0) {
+          attempt.minViaCount = 1;
+          attempt.maxViaCount = maximumViaCount;
+          attempt.widthCursor = 0;
+          return;
+        }
+        this.layerAttempt = null;
+        this.phase = "scan-trace";
+        return;
+      }
       const segmentIndex = this.routeSegmentIndex;
       this.layerAttempt = null;
       this.prepareRegularGridCandidates(trace, segmentIndex);
@@ -768,7 +844,19 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         candidateWidth,
       ),
     );
-    const maximumNeckLength = clamp(this.nominalTraceWidth * 3, 1.5, 3);
+    let maximumNeckLength = clamp(this.nominalTraceWidth * 3, 1.5, 3);
+    let searchPadding = Math.min(
+      5,
+      Math.max(2.5, distance(start, end) / 2, candidateWidth * 4),
+    );
+    if (attempt.wholeTrace) {
+      maximumNeckLength = 0;
+      const bounds = this.inputProblem.bounds;
+      searchPadding = Math.max(
+        bounds.maxX - bounds.minX,
+        bounds.maxY - bounds.minY,
+      );
+    }
 
     if (attempt.maxViaCount > 0) {
       this.attemptedLayerGridCount++;
@@ -810,10 +898,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       fixedVias: this.getFixedViasOutsideInterval(trace, attempt.interval),
       bounds: this.inputProblem.bounds,
       obstacleClearance: this.getDesiredPadClearance(candidateWidth),
-      searchPadding: Math.min(
-        5,
-        Math.max(2.5, distance(start, end) / 2, candidateWidth * 4),
-      ),
+      searchPadding,
     });
   }
 
@@ -1354,6 +1439,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
   private applyLayerRoute(output: LayerGridRouteOutput) {
     const trace = this.traces[this.traceIndex]!;
+    const wholeTrace = this.layerAttempt!.wholeTrace;
     const interval = this.layerAttempt!.interval;
     const originalStart = trace.route[interval.startIndex] as WireRoutePoint;
     const originalEnd = trace.route[interval.endIndex] as WireRoutePoint;
@@ -1406,6 +1492,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.pendingLayerOutput = null;
     this.pendingLayerPushCount = 0;
     this.phase = "evaluate-segment";
+    if (wholeTrace) this.phase = "scan-trace";
   }
 
   private startTraceInflation(trace: SimplifiedPcbTrace, segmentIndex: number) {

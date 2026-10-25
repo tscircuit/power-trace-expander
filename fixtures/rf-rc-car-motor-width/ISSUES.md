@@ -14,18 +14,21 @@ the fixture. The test uses this package's `PowerTraceExpanderInput` contract and
 runs `PowerTraceExpanderSolver(input, { allowNewVias: false })`, matching the
 consumer's restriction on new vias.
 
-Run `bun test tests/rf-rc-car-motor-width.test.ts --timeout 9999999`. The test
-deliberately preserves the current bug and the solver's native
+The [reproduction PR](https://github.com/tscircuit/power-trace-expander/pull/58)
+preserves the failing behavior and its native full-board snapshot. On this
+stacked fix branch, run
+`bun test tests/rf-rc-car-motor-width.test.ts --timeout 9999999` to check the
+improved routing and updated native
 [full-board snapshot](../../tests/__snapshots__/rf-rc-car-motor-width.snap.svg).
 
-| Connection | Motor path | Nominal width | Minimum output width |
-| --- | --- | ---: | ---: |
-| `source_trace_42` | U2.OUT_L1 → JML.1 | 1 mm | **0.15 mm** |
-| `source_trace_43` | U2.OUT_L2 → JML.2 | 1 mm | **0.30 mm** |
-| `source_trace_44` | U2.OUT_R1 → JMR.1 | 1 mm | 1 mm |
-| `source_trace_45` | U2.OUT_R2 → JMR.2 | 1 mm | 1 mm |
+| Connection | Motor path | Nominal width | Before minimum | After minimum |
+| --- | --- | ---: | ---: | ---: |
+| `source_trace_42` | U2.OUT_L1 → JML.1 | 1 mm | **0.15 mm** | **1 mm** |
+| `source_trace_43` | U2.OUT_L2 → JML.2 | 1 mm | **0.30 mm** | **1 mm** |
+| `source_trace_44` | U2.OUT_R1 → JMR.1 | 1 mm | 1 mm | 1 mm |
+| `source_trace_45` | U2.OUT_R2 → JMR.2 | 1 mm | 1 mm | 1 mm |
 
-The solver reports success while leaving these narrow left-motor sections.
+Before the fix, the solver reports success while leaving these narrow left-motor sections.
 Motor current passes through them; equal-thickness 0.15 mm copper has 6.67 times
 the resistance per unit length of 1 mm copper. Hardware has not been tested.
 
@@ -38,8 +41,16 @@ fixture therefore demonstrates failure to achieve the intended nominal width,
 not violation of a per-connection SRJ hard minimum. Legitimate pad escapes and
 genuinely blocked corridors may still require narrower copper.
 
-A fix should improve actual copper geometry in this complete obstacle field,
-retain connectivity and the two full-width right-motor controls, and respect
-`allowNewVias: false`. The stacked fix should replace the current narrowing
-assertions with its improved routing expectations and update the native snapshot.
-This report makes no clean-DRC or fabrication-ready claim.
+## Stacked fix
+
+After local expansion, the solver tries a bounded whole-trace route for an
+isolated two-terminal net whose endpoint pads support the nominal width. It
+keeps surrounding copper fixed and uses the existing route validation and
+length limits. Nets with branch contacts, intermediate pads or separate stacked
+SMT pads are excluded. An unsuccessful search preserves the existing route.
+
+Both left-motor paths take new geometry at 1 mm throughout. All 46 traces remain,
+the right-motor paths remain at 1 mm, and total routed vias decrease from 22 to
+20 with `allowNewVias: false`. The wider left paths are longer; this is a routing
+tradeoff rather than widening copper in place. This remains best-effort nominal
+width expansion, not a new hard-minimum contract or a fabrication-ready claim.
