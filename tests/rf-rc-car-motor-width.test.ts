@@ -1,10 +1,7 @@
 import { expect, test } from "bun:test";
 import "graphics-debug/matcher";
 import inputJson from "../fixtures/rf-rc-car-motor-width/input.json";
-import {
-  PowerTraceExpanderSolver,
-  type PowerTraceExpanderInput,
-} from "../src";
+import { PowerTraceExpanderSolver, type PowerTraceExpanderInput } from "../src";
 
 test("RF RC car full board reproduces narrow left-motor traces", async () => {
   const input = structuredClone(inputJson) as PowerTraceExpanderInput;
@@ -15,14 +12,16 @@ test("RF RC car full board reproduces narrow left-motor traces", async () => {
   solver.solve();
 
   const minimumWidths = new Map(
-    solver.getOutput().map((trace) => [
-      trace.connection_name,
-      Math.min(
-        ...trace.route
-          .filter((point) => point.route_type === "wire")
-          .map((point) => point.width),
-      ),
-    ]),
+    solver
+      .getOutput()
+      .map((trace) => [
+        trace.connection_name,
+        Math.min(
+          ...trace.route
+            .filter((point) => point.route_type === "wire")
+            .map((point) => point.width),
+        ),
+      ]),
   );
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
