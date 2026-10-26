@@ -41,7 +41,6 @@ type SolverPhase =
 type RouteInterval = { startIndex: number; endIndex: number };
 
 type LayerRouteAttempt = {
-  wholeTrace: boolean;
   interval: RouteInterval;
   minViaCount: number;
   maxViaCount: number;
@@ -293,7 +292,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.traceIndex = this.traceOrder[this.traceOrderCursor]!;
 
     const trace = this.traces[this.traceIndex]!;
-    if (!this.findConnectionForTrace(trace)) {
+    const connection = this.findConnectionForTrace(trace);
+    if (!connection) {
       // Preserved child-subcircuit traces are supplied as fixed routing
       // geometry but have no connection in the current board SRJ. Re-emit them
       // byte-for-byte and use them only as obstacles for board-level traces.
@@ -311,7 +311,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.rebuildObstacleIndex();
 
     if (this.recoveringWholeTraces) {
-      this.prepareWholeTraceRouteAttempt(trace);
+      this.prepareWholeTraceRouteAttempt(trace, connection);
       return;
     }
 
@@ -654,7 +654,6 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
     this.layerAttemptCountByTrace.set(this.traceIndex, priorAttemptCount + 1);
     this.layerAttempt = {
-      wholeTrace: false,
       interval,
       minViaCount: canUseVias ? 1 : 0,
       maxViaCount: maximumViaCount,
@@ -718,9 +717,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     return indices;
   }
 
-  private prepareWholeTraceRouteAttempt(trace: SimplifiedPcbTrace): void {
-    const connection = this.findConnectionForTrace(trace);
-    if (!connection) return;
+  private prepareWholeTraceRouteAttempt(
+    trace: SimplifiedPcbTrace,
+    connection: SimpleRouteConnection,
+  ): void {
     if (
       !canRerouteWholeTrace({
         trace,
@@ -738,7 +738,6 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     if (!isWire(start) || !isWire(end)) return;
     const connectionNames = this.getTraceConnectionNames(trace);
     this.layerAttempt = {
-      wholeTrace: true,
       interval: { startIndex: 0, endIndex: trace.route.length - 1 },
       minViaCount: 0,
       maxViaCount: 0,
@@ -765,7 +764,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return;
     }
     if (attempt.widthCursor >= attempt.candidateWidths.length) {
-      if (attempt.wholeTrace) {
+      if (this.recoveringWholeTraces) {
         let maximumViaCount = MAX_LAYER_ROUTE_VIAS;
         if (this.options.allowNewVias === false) {
           maximumViaCount = Math.min(
@@ -849,7 +848,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       5,
       Math.max(2.5, distance(start, end) / 2, candidateWidth * 4),
     );
-    if (attempt.wholeTrace) {
+    if (this.recoveringWholeTraces) {
       maximumNeckLength = 0;
       const bounds = this.inputProblem.bounds;
       searchPadding = Math.max(
@@ -1439,7 +1438,6 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
   private applyLayerRoute(output: LayerGridRouteOutput) {
     const trace = this.traces[this.traceIndex]!;
-    const wholeTrace = this.layerAttempt!.wholeTrace;
     const interval = this.layerAttempt!.interval;
     const originalStart = trace.route[interval.startIndex] as WireRoutePoint;
     const originalEnd = trace.route[interval.endIndex] as WireRoutePoint;
@@ -1492,7 +1490,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.pendingLayerOutput = null;
     this.pendingLayerPushCount = 0;
     this.phase = "evaluate-segment";
-    if (wholeTrace) this.phase = "scan-trace";
+    if (this.recoveringWholeTraces) this.phase = "scan-trace";
   }
 
   private startTraceInflation(trace: SimplifiedPcbTrace, segmentIndex: number) {
@@ -2407,12 +2405,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     if (this.solved || this.phase === "complete") return 1;
     if (this.budgetLimitedExpansion) return 0.99;
     if (this.traceOrder.length === 0) return 1;
-    return Math.min(
-      0.99,
-      (this.passIndex +
-        Math.max(0, this.traceOrderCursor) / this.traceOrder.length) /
-        this.maxPassCount,
-    );
+    let passProgress =
+      Math.max(0, this.traceOrderCursor) / this.traceOrder.length;
+    if (this.recoveringWholeTraces) passProgress = 1;
+    return Math.min(0.99, (this.passIndex + passProgress) / this.maxPassCount);
   }
 
   override getConstructorParams() {

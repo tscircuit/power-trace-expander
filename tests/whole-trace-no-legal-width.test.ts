@@ -76,15 +76,16 @@ test("an impossible full-width route retains valid top-only copper without addin
   expect(route[0]).toMatchObject({ x: -8, y: 0, layer: "top" });
   expect(route.at(-1)).toMatchObject({ x: 8, y: 0, layer: "top" });
   const wirePoints = route.filter((point) => point.route_type === "wire");
-  expect(Math.min(...wirePoints.map((point) => point.width))).toBeLessThan(1);
+  const widths = wirePoints.map((point) => point.width);
+  expect(Math.min(...widths)).toBeLessThan(1);
+  expect(Math.min(...widths)).toBeGreaterThanOrEqual(input.minTraceWidth);
+  expect(Math.max(...widths)).toBeLessThanOrEqual(1);
+  expect(
+    route.every(
+      (point) => point.route_type === "wire" && point.layer === "top",
+    ),
+  ).toBe(true);
   const index = new SpatialObstacleIndex(input, output, 0);
-  for (const point of route) {
-    expect(point.route_type).toBe("wire");
-    if (point.route_type !== "wire") continue;
-    expect(point.layer).toBe("top");
-    expect(point.width).toBeGreaterThanOrEqual(0.2);
-    expect(point.width).toBeLessThanOrEqual(1);
-  }
   for (let k = 0; k < route.length - 1; k++) {
     const start = route[k]!,
       end = route[k + 1]!;

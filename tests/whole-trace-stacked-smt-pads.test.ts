@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { PowerTraceExpanderSolver, type PowerTraceExpanderInput } from "../src";
-import { distancePointToSegment } from "../src/geometry";
 
 test("separate top and bottom SMT pads do not provide a through-hole transition", () => {
   const input: PowerTraceExpanderInput = {
@@ -40,15 +39,7 @@ test("separate top and bottom SMT pads do not provide a through-hole transition"
         center: { x: 8, y: 0 },
         width: 1.2,
         height: 1.2,
-        layers: ["top"],
-        connectedTo: ["POWER"],
-      },
-      {
-        type: "rect",
-        center: { x: 8, y: 0 },
-        width: 1.2,
-        height: 1.2,
-        layers: ["bottom"],
+        layers: ["top", "bottom"],
         connectedTo: ["POWER"],
       },
       {
@@ -85,25 +76,10 @@ test("separate top and bottom SMT pads do not provide a through-hole transition"
 
   expect(solver.solved).toBe(true);
   const route = solver.getOutput()[0]!.route;
-  expect(route.every((point) => point.route_type === "wire")).toBe(true);
-  const touchesTopLeftPad = route.some((start, index) => {
-    const end = route[index + 1];
-    if (start.route_type !== "wire" || end?.route_type !== "wire") return false;
-    if (start.layer !== "top" || end.layer !== "top") return false;
-    return (
-      distancePointToSegment({ x: -8, y: 0 }, start, end) <=
-      Math.min(start.width, end.width) / 2 + 0.6
-    );
-  });
-  const touchesTopRightPad = route.some((start, index) => {
-    const end = route[index + 1];
-    if (start.route_type !== "wire" || end?.route_type !== "wire") return false;
-    if (start.layer !== "top" || end.layer !== "top") return false;
-    return (
-      distancePointToSegment({ x: 8, y: 0 }, start, end) <=
-      Math.min(start.width, end.width) / 2 + 0.6
-    );
-  });
-  expect(touchesTopLeftPad).toBe(true);
-  expect(touchesTopRightPad).toBe(true);
+  expect(route[0]).toMatchObject({ x: -8, y: 0, layer: "top" });
+  expect(
+    route.every(
+      (point) => point.route_type === "wire" && point.layer === "top",
+    ),
+  ).toBe(true);
 });

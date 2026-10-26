@@ -29,15 +29,10 @@ export const canRerouteWholeTrace = ({
   const end = trace.route.at(-1);
   if (start?.route_type !== "wire" || end?.route_type !== "wire") return false;
   const [firstTerminal, secondTerminal] = connection.pointsToConnect;
-  if (
-    !(
-      (pointsEqual(start, firstTerminal!) &&
-        pointsEqual(end, secondTerminal!)) ||
-      (pointsEqual(start, secondTerminal!) && pointsEqual(end, firstTerminal!))
-    )
-  ) {
-    return false;
-  }
+  const endpointsMatch =
+    (pointsEqual(start, firstTerminal!) && pointsEqual(end, secondTerminal!)) ||
+    (pointsEqual(start, secondTerminal!) && pointsEqual(end, firstTerminal!));
+  if (!endpointsMatch) return false;
   if (
     trace.route.some(
       (point) => point.route_type !== "wire" && point.route_type !== "via",
@@ -46,15 +41,13 @@ export const canRerouteWholeTrace = ({
     return false;
   }
 
-  const netNames = new Set(
-    connectionNameResolver.canonicalize([trace.pcb_trace_id]),
-  );
+  const [netName] = connectionNameResolver.canonicalize([trace.pcb_trace_id]);
   for (const otherTrace of [...traces, ...(inputProblem.fixedTraces ?? [])]) {
     if (otherTrace === trace) continue;
     if (
       connectionNameResolver
         .canonicalize([otherTrace.pcb_trace_id])
-        .some((name) => netNames.has(name))
+        .includes(netName!)
     ) {
       return false;
     }
@@ -65,7 +58,7 @@ export const canRerouteWholeTrace = ({
   for (const obstacle of inputProblem.obstacles) {
     const connected = connectionNameResolver
       .canonicalize(obstacle.connectedTo)
-      .some((name) => netNames.has(name));
+      .includes(netName!);
     if (!connected) continue;
     if (
       Math.min(obstacle.width, obstacle.height) <
