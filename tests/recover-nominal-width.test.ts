@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { PowerTraceExpanderSolver, type PowerTraceExpanderInput } from "../src";
 
-test("separate top and bottom SMT pads do not provide a through-hole transition", () => {
+test("recovers nominal width through connected terminal layers without new vias", () => {
   const input: PowerTraceExpanderInput = {
-    bounds: { minX: -10, maxX: 10, minY: -1, maxY: 1 },
     layerCount: 2,
     minTraceWidth: 0.2,
     minTraceToPadEdgeClearance: 0.1,
+    bounds: { minX: -10, maxX: 10, minY: -1, maxY: 1 },
     connections: [
       {
         name: "POWER",
@@ -23,15 +23,7 @@ test("separate top and bottom SMT pads do not provide a through-hole transition"
         center: { x: -8, y: 0 },
         width: 1.2,
         height: 1.2,
-        layers: ["top"],
-        connectedTo: ["POWER"],
-      },
-      {
-        type: "rect",
-        center: { x: -8, y: 0 },
-        width: 1.2,
-        height: 1.2,
-        layers: ["bottom"],
+        layers: ["top", "bottom"],
         connectedTo: ["POWER"],
       },
       {
@@ -44,17 +36,17 @@ test("separate top and bottom SMT pads do not provide a through-hole transition"
       },
       {
         type: "rect",
-        center: { x: 0, y: 0.8 },
+        center: { x: 0, y: 0.65 },
         width: 2,
-        height: 1.2,
+        height: 0.7,
         layers: ["top"],
         connectedTo: [],
       },
       {
         type: "rect",
-        center: { x: 0, y: -0.8 },
+        center: { x: 0, y: -0.65 },
         width: 2,
-        height: 1.2,
+        height: 0.7,
         layers: ["top"],
         connectedTo: [],
       },
@@ -75,11 +67,9 @@ test("separate top and bottom SMT pads do not provide a through-hole transition"
   solver.solve();
 
   expect(solver.solved).toBe(true);
-  const route = solver.getOutput()[0]!.route;
-  expect(route[0]).toMatchObject({ x: -8, y: 0, layer: "top" });
-  expect(
-    route.every(
-      (point) => point.route_type === "wire" && point.layer === "top",
-    ),
-  ).toBe(true);
+  expect(solver.failed).toBe(false);
+  expect(solver.getOutput()[0]!.route).toEqual([
+    { route_type: "wire", x: -8, y: 0, width: 1, layer: "bottom" },
+    { route_type: "wire", x: 8, y: 0, width: 1, layer: "bottom" },
+  ]);
 });
