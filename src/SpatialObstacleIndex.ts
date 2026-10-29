@@ -22,6 +22,11 @@ type ConnectedPad = {
   canonicalConnectionNames: ReadonlySet<string>;
 };
 
+type LayerCollisionIndex = {
+  index: Flatbush | null;
+  itemIndices: number[];
+};
+
 type ConnectionNames = IndexedObstacle["connectionNames"];
 
 const getBoardLayers = (layerCount: number) => [
@@ -46,6 +51,10 @@ export class SpatialObstacleIndex {
   readonly bounds: SimpleRouteJson["bounds"];
   private readonly maxIndexedViaHoleDiameter: number;
   private readonly index: Flatbush | null;
+  private readonly collisionIndexesByLayer = new Map<
+    string,
+    LayerCollisionIndex
+  >();
   private readonly connectionNameSets: ReadonlySet<string>[];
   private readonly copperObjectIds: string[];
   private readonly connectionNameResolver: ConnectionNameResolver;
@@ -241,7 +250,7 @@ export class SpatialObstacleIndex {
   collides(query: CollisionQuery): boolean {
     if (this.isOutsideBounds(query)) return true;
     const { radius, candidates, canonicalConnectionNames } =
-      this.getCollisionCandidates(query);
+      this.getCollisionCandidates(query, true);
     for (const itemIndex of candidates) {
       if (this.itemCollides(itemIndex, query, radius, canonicalConnectionNames))
         return true;
@@ -675,7 +684,25 @@ export class SpatialObstacleIndex {
     return `${objectId}:${item.kind}:${routeRange}:${item.minX},${item.minY},${item.maxX},${item.maxY}`;
   }
 
-  private getCollisionCandidates(query: CollisionQuery) {
+  private getLayerCollisionIndex(layer: string): LayerCollisionIndex {
+    const existing = this.collisionIndexesByLayer.get(layer);
+    if (existing) return existing;
+    const itemIndices: number[] = [];
+    for (let index = 0; index < this.items.length; index++) {
+      if (this.items[index]!.layers.includes(layer)) itemIndices.push(index);
+    }
+    const index = itemIndices.length ? new Flatbush(itemIndices.length) : null;
+    for (const itemIndex of itemIndices) {
+      const item = this.items[itemIndex]!;
+      index!.add(item.minX, item.minY, item.maxX, item.maxY);
+    }
+    index?.finish();
+    const result = { index, itemIndices };
+    this.collisionIndexesByLayer.set(layer, result);
+    return result;
+  }
+
+  private getCollisionCandidates(query: CollisionQuery, layerScoped = false) {
     const maximumClearance = Math.max(
       this.clearance,
       this.holeClearance,
@@ -690,13 +717,21 @@ export class SpatialObstacleIndex {
       maxX: Math.max(query.start.x, query.end.x) + radius,
       maxY: Math.max(query.start.y, query.end.y) + radius,
     };
-    const candidates =
-      this.index?.search(
+    // Boolean collision checks need only copper on the queried layer. Keep
+    // the original global order for APIs that return ordered collision items.
+    const layerIndex = layerScoped
+      ? this.getLayerCollisionIndex(query.layer)
+      : null;
+    const index = layerIndex ? layerIndex.index : this.index;
+    let candidates =
+      index?.search(
         queryBounds.minX,
         queryBounds.minY,
         queryBounds.maxX,
         queryBounds.maxY,
       ) ?? [];
+    if (layerIndex)
+      candidates = candidates.map((index) => layerIndex.itemIndices[index]!);
     return {
       radius,
       candidates,
