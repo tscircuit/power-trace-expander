@@ -92,7 +92,7 @@ test("inflates a power corridor by locally pushing a lower-width trace", () => {
   ).toBe(true);
 });
 
-test("uses short indexed rectangles for a rotated obstacle", () => {
+test("uses one exact polygon for a rotated obstacle", () => {
   const input: SimpleRouteJson = {
     ...structuredClone(centralObstacleFixture),
     traces: [],
@@ -110,7 +110,17 @@ test("uses short indexed rectangles for a rotated obstacle", () => {
   };
   const index = new SpatialObstacleIndex(input, []);
 
-  expect(index.items.length).toBeGreaterThan(4);
+  expect(index.items.length).toBe(1);
+  // Inside the broad-phase AABB but outside the rotated rectangle.
+  expect(
+    index.collides({
+      start: { x: -1.2, y: 1.2 },
+      end: { x: -1.1, y: 1.2 },
+      layer: "top",
+      width: 0.2,
+      connectionNames: ["OTHER_NET"],
+    }),
+  ).toBe(false);
   expect(
     index.collides({
       start: { x: -2, y: -2 },

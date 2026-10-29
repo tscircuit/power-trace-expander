@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { ConnectionNameResolver } from "../src/ConnectionNameResolver";
+import { approximateObstacleWithRects } from "../src/geometry";
 import { SpatialObstacleIndex } from "../src/SpatialObstacleIndex";
 import type { CollisionQuery, SimpleRouteJson } from "../src/types";
 
@@ -34,10 +35,10 @@ test("subdividing a non-pour obstacle does not repeat its full alias resolution"
   };
   const resolver = new CountingConnectionNameResolver(problem);
   const obstacleIndex = new SpatialObstacleIndex(
-    problem,
+    { ...problem, obstacles: [] },
     [],
     undefined,
-    [],
+    approximateObstacleWithRects(problem.obstacles[0]!),
     resolver,
   );
   expect(obstacleIndex.items.length).toBeGreaterThan(1000);

@@ -1,7 +1,7 @@
 import Flatbush from "flatbush";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
-  approximateObstacleWithRects,
+  createObstacleIndexItems,
   approximateSegmentWithRects,
   distancePointToSegment,
   distanceSegmentToPolygon,
@@ -88,15 +88,7 @@ export class SpatialObstacleIndex {
       0.3;
     this.items = [
       ...simpleRouteJson.obstacles.flatMap((obstacle, obstacleIndex) =>
-        // A rectangular pour is already an exact polygon. Subdividing a
-        // board-sized plane creates tens of thousands of identical-net
-        // cells at every trace-index rebuild without improving precision.
-        approximateObstacleWithRects(
-          obstacle,
-          obstacle.isCopperPour && obstacle.type === "rect"
-            ? Number.POSITIVE_INFINITY
-            : 0.6,
-        ).map((item) => ({
+        createObstacleIndexItems(obstacle).map((item) => ({
           ...item,
           copperObjectId: `obstacle:${obstacleIndex}`,
         })),
