@@ -200,6 +200,54 @@ const rotatePoint = (point: Point, center: Point, radians: number): Point => {
   };
 };
 
+const getObstacleKind = (obstacle: Obstacle): IndexedObstacle["obstacleKind"] => {
+  if (obstacle.isNonPlatedHole) return "hole";
+  if (obstacle.connectedTo[0]?.startsWith("pcb_via_")) return "via";
+  if (
+    obstacle.connectedTo[0]?.startsWith("pcb_smtpad_") ||
+    obstacle.connectedTo[0]?.startsWith("pcb_plated_hole_")
+  ) {
+    return "pad";
+  }
+  return "other";
+};
+
+/** Index bounds are a broad-phase filter; exactShape handles clearance/contact.
+ * Rectangles need one entry regardless of their size or electrical purpose.
+ * Oval obstacles retain the existing conservative rectangular approximation.
+ */
+export function createObstacleIndexItems(
+  obstacle: Obstacle,
+): IndexedObstacle[] {
+  if (
+    obstacle.type !== "rect" ||
+    (obstacle.isNonPlatedHole && obstacle.shape === "circle")
+  ) {
+    return approximateObstacleWithRects(obstacle);
+  }
+  const { center, width, height } = obstacle;
+  const rotation = ((obstacle.ccwRotationDegrees ?? 0) * Math.PI) / 180;
+  const corners = [
+    { x: center.x - width / 2, y: center.y - height / 2 },
+    { x: center.x + width / 2, y: center.y - height / 2 },
+    { x: center.x + width / 2, y: center.y + height / 2 },
+    { x: center.x - width / 2, y: center.y + height / 2 },
+  ].map((point) => rotatePoint(point, center, rotation));
+  return [
+    {
+      minX: Math.min(...corners.map((point) => point.x)),
+      minY: Math.min(...corners.map((point) => point.y)),
+      maxX: Math.max(...corners.map((point) => point.x)),
+      maxY: Math.max(...corners.map((point) => point.y)),
+      layers: obstacle.layers,
+      kind: "obstacle",
+      obstacleKind: getObstacleKind(obstacle),
+      connectionNames: obstacle.connectedTo,
+      exactShape: { type: "polygon", points: corners },
+    },
+  ];
+}
+
 export function approximateObstacleWithRects(
   obstacle: Obstacle,
   maxCellSize = 0.6,
@@ -249,14 +297,7 @@ export function approximateObstacleWithRects(
         maxY: Math.max(...corners.map((point) => point.y)),
         layers: obstacle.layers,
         kind: "obstacle",
-        obstacleKind: obstacle.isNonPlatedHole
-          ? "hole"
-          : obstacle.connectedTo[0]?.startsWith("pcb_via_")
-            ? "via"
-            : obstacle.connectedTo[0]?.startsWith("pcb_smtpad_") ||
-                obstacle.connectedTo[0]?.startsWith("pcb_plated_hole_")
-              ? "pad"
-              : "other",
+        obstacleKind: getObstacleKind(obstacle),
         connectionNames: obstacle.connectedTo,
         exactShape: { type: "polygon", points: corners },
       });

@@ -1,7 +1,7 @@
 import Flatbush from "flatbush";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
-  approximateObstacleWithRects,
+  createObstacleIndexItems,
   approximateSegmentWithRects,
   distancePointToSegment,
   distanceSegmentToPolygon,
@@ -88,7 +88,7 @@ export class SpatialObstacleIndex {
       0.3;
     this.items = [
       ...simpleRouteJson.obstacles.flatMap((obstacle, obstacleIndex) =>
-        approximateObstacleWithRects(obstacle).map((item) => ({
+        createObstacleIndexItems(obstacle).map((item) => ({
           ...item,
           copperObjectId: `obstacle:${obstacleIndex}`,
         })),
