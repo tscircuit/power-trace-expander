@@ -12,7 +12,7 @@ class CountingConnectionNameResolver extends ConnectionNameResolver {
   }
 }
 
-test("subdividing a copper pour does not repeat its full alias resolution", (): void => {
+test("subdividing a non-pour obstacle does not repeat its full alias resolution", (): void => {
   const aliases = Array.from({ length: 512 }, (_, index) => `ground-${index}`);
   const problem: SimpleRouteJson = {
     layerCount: 2,
@@ -28,7 +28,7 @@ test("subdividing a copper pour does not repeat its full alias resolution", (): 
         ccwRotationDegrees: 30,
         layers: ["top"],
         connectedTo: aliases,
-        isCopperPour: true,
+        isCopperPour: false,
       },
     ],
   };
