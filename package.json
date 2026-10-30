@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@tscircuit/solver-utils": "^0.0.19",
-    "flatbush": "git+https://github.com/seveibar/flatbush.git#7411dfd69d30d7bebc23790aea21bad885191d60",
+    "flatbush": "git+https://github.com/seveibar/flatbush.git#420df716eb7ce727162fa22ecef7e1ceb9040f33",
     "graphics-debug": "^0.0.96"
   },
   "peerDependencies": {
