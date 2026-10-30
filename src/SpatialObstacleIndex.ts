@@ -2,11 +2,13 @@ import Flatbush from "flatbush";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
   createObstacleIndexItems,
-  approximateSegmentWithRects,
+  createSegmentIndexItems,
   distancePointToSegment,
   distanceSegmentToPolygon,
   distanceSegmentToSegment,
   segmentIntersectsRect,
+  segmentsWithinDistance,
+  segmentWithinPolygonDistance,
 } from "./geometry";
 import type {
   CollisionQuery,
@@ -225,7 +227,7 @@ export class SpatialObstacleIndex {
           continue;
         }
         items.push(
-          ...approximateSegmentWithRects({
+          ...createSegmentIndexItems({
             start: point,
             end: next,
             // Circuit JSON and @tscircuit/checks assign each wire segment the
@@ -885,24 +887,20 @@ export class SpatialObstacleIndex {
     itemRadius: number,
   ): boolean {
     if (item.exactShape?.type === "segment") {
-      return (
-        distanceSegmentToSegment(
-          query.start,
-          query.end,
-          item.exactShape.start,
-          item.exactShape.end,
-        ) <=
-        itemRadius + item.exactShape.width / 2 + 1e-9
+      return segmentsWithinDistance(
+        query.start,
+        query.end,
+        item.exactShape.start,
+        item.exactShape.end,
+        itemRadius + item.exactShape.width / 2 + 1e-9,
       );
     }
     if (item.exactShape?.type === "polygon") {
-      return (
-        distanceSegmentToPolygon(
-          query.start,
-          query.end,
-          item.exactShape.points,
-        ) <=
-        itemRadius + 1e-9
+      return segmentWithinPolygonDistance(
+        query.start,
+        query.end,
+        item.exactShape.points,
+        itemRadius + 1e-9,
       );
     }
     if (item.exactShape?.type === "circle") {
