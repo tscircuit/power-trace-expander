@@ -304,20 +304,22 @@ export class SpatialObstacleIndex {
       }
       const segment = { ...query, start, end };
       if (this.isOutsideBounds(segment)) return true;
-      const matches =
-        index?.search(
+      return (
+        index?.collides(
           Math.min(start.x, end.x) - radius,
           Math.min(start.y, end.y) - radius,
           Math.max(start.x, end.x) + radius,
           Math.max(start.y, end.y) + radius,
-        ) ?? [];
-      for (const match of matches) {
-        const blocker = blockers[match]!;
-        if (this.itemGeometryCollides(blocker.item, segment, blocker.radius)) {
-          return true;
-        }
-      }
-      return false;
+          (match) => {
+            const blocker = blockers[match]!;
+            return this.itemGeometryCollides(
+              blocker.item,
+              segment,
+              blocker.radius,
+            );
+          },
+        ) ?? false
+      );
     };
   }
 
