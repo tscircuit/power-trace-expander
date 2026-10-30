@@ -8,6 +8,10 @@ import {
 } from "./octilinear";
 import type { GridRouteOutput, GridRouteProblem, Point } from "./types";
 
+const collisionTables = new WeakMap<object, Map<string, Uint8Array>>();
+const MAX_CACHED_GRID_PROBLEMS = 64;
+const MAX_COLLISION_TABLE_BYTES = 1024 * 1024;
+
 type SearchNode = {
   row: number;
   column: number;
@@ -101,6 +105,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
   private closedCellCount = 0;
   private targetCell: { row: number; column: number };
   private output: GridRouteOutput | null = null;
+  private collisionTable: Uint8Array | undefined;
   private collisionChecker!: (start: Point, end: Point) => boolean;
 
   constructor(problem: GridRouteProblem) {
@@ -184,6 +189,24 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
           maxY: Math.max(this.searchBounds.maxY, problem.start.y, problem.end.y),
         },
       );
+    const tableSize = this.rows * this.columns * DIRECTIONS.length;
+    if (tableSize <= MAX_COLLISION_TABLE_BYTES) {
+      let tables = collisionTables.get(problem.obstacleIndex);
+      if (!tables) {
+        tables = new Map();
+        collisionTables.set(problem.obstacleIndex, tables);
+      }
+      const { obstacleIndex: _index, ...geometry } = problem;
+      const key = JSON.stringify(geometry);
+      let table = tables.get(key);
+      if (table) tables.delete(key);
+      else table = new Uint8Array(tableSize);
+      tables.set(key, table);
+      if (tables.size > MAX_CACHED_GRID_PROBLEMS) {
+        tables.delete(tables.keys().next().value!);
+      }
+      this.collisionTable = table;
+    }
     const startCell = this.pointToCell(problem.start);
     this.targetCell = this.pointToCell(problem.end);
     const startNode: SearchNode = {
@@ -251,7 +274,8 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
       return;
     }
 
-    for (const [deltaRow, deltaColumn] of DIRECTIONS) {
+    for (let direction = 0; direction < DIRECTIONS.length; direction++) {
+      const [deltaRow, deltaColumn] = DIRECTIONS[direction]!;
       const row = node.row + deltaRow;
       const column = node.column + deltaColumn;
       if (row < 0 || row >= this.rows || column < 0 || column >= this.columns)
@@ -272,7 +296,17 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
         continue;
       }
       const point = this.cellToPoint(row, column);
-      const connector = this.getAllowedConnector(node, point);
+      const isTerminalConnector = this.problem.requireOctilinear &&
+        (node.parentIndex === -1 || pointsEqual(point, this.problem.end));
+      const edgeIndex = flatIndex * DIRECTIONS.length + direction;
+      const cached = !isTerminalConnector && node.parentIndex !== -1
+        ? this.collisionTable?.[edgeIndex] : undefined;
+      if (cached === 2) continue;
+      const connector = cached === 1
+        ? [node, point] : this.getAllowedConnector(node, point);
+      if (!isTerminalConnector && node.parentIndex !== -1 && this.collisionTable) {
+        this.collisionTable[edgeIndex] = connector === null ? 2 : 1;
+      }
       if (connector === null) continue;
       if (needsStartConnectorCost) moveCost = getPathLength(connector);
       const g = node.g + moveCost;
