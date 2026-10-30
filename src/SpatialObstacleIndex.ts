@@ -2,11 +2,13 @@ import Flatbush from "flatbush";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
   createObstacleIndexItems,
-  approximateSegmentWithRects,
+  createSegmentIndexItems,
   distancePointToSegment,
   distanceSegmentToPolygon,
   distanceSegmentToSegment,
   segmentIntersectsRect,
+  segmentsWithinDistance,
+  segmentWithinPolygonDistance,
 } from "./geometry";
 import type {
   CollisionQuery,
@@ -225,7 +227,7 @@ export class SpatialObstacleIndex {
           continue;
         }
         items.push(
-          ...approximateSegmentWithRects({
+          ...createSegmentIndexItems({
             start: point,
             end: next,
             // Circuit JSON and @tscircuit/checks assign each wire segment the
@@ -287,10 +289,47 @@ export class SpatialObstacleIndex {
       }
     }
     const index = blockers.length ? new Flatbush(blockers.length) : null;
-    for (const { item } of blockers) {
-      index!.add(item.minX, item.minY, item.maxX, item.maxY);
+    for (const { item, radius: itemRadius } of blockers) {
+      // Exact predicates include a 1e-9 contact tolerance. The prepared
+      // broadphase must enclose it, including expansion-rounding error.
+      const extent = Math.max(
+        Math.abs(item.minX),
+        Math.abs(item.minY),
+        Math.abs(item.maxX),
+        Math.abs(item.maxY),
+      );
+      const indexedRadius =
+        itemRadius +
+        1e-9 +
+        Number.EPSILON * (extent + Math.abs(itemRadius)) * 4;
+      index!.add(
+        item.minX - indexedRadius,
+        item.minY - indexedRadius,
+        item.maxX + indexedRadius,
+        item.maxY + indexedRadius,
+      );
     }
     index?.finish();
+    // The query is private to this synchronous checker and never escapes.
+    // Prepare its geometry callback once instead of allocating it per edge.
+    const segment = { ...query };
+    let minX = 0,
+      minY = 0,
+      maxX = 0,
+      maxY = 0;
+    const collides = (match: number): boolean => {
+      const blocker = blockers[match]!;
+      const item = blocker.item;
+      // Retain ordinary-query boundary decisions as well as exact geometry.
+      if (
+        maxX < item.minX ||
+        maxY < item.minY ||
+        minX > item.maxX ||
+        minY > item.maxY
+      )
+        return false;
+      return this.itemGeometryCollides(item, segment, blocker.radius);
+    };
     return (start, end): boolean => {
       if (
         Math.min(start.x, end.x) < bounds.minX ||
@@ -300,22 +339,22 @@ export class SpatialObstacleIndex {
       ) {
         throw new Error("Segment exceeds its prepared collision bounds");
       }
-      const segment = { ...query, start, end };
+      segment.start = start;
+      segment.end = end;
       if (this.isOutsideBounds(segment)) return true;
-      const matches =
-        index?.search(
-          Math.min(start.x, end.x) - radius,
-          Math.min(start.y, end.y) - radius,
-          Math.max(start.x, end.x) + radius,
-          Math.max(start.y, end.y) + radius,
-        ) ?? [];
-      for (const match of matches) {
-        const blocker = blockers[match]!;
-        if (this.itemGeometryCollides(blocker.item, segment, blocker.radius)) {
-          return true;
-        }
-      }
-      return false;
+      minX = Math.min(start.x, end.x) - radius;
+      minY = Math.min(start.y, end.y) - radius;
+      maxX = Math.max(start.x, end.x) + radius;
+      maxY = Math.max(start.y, end.y) + radius;
+      return (
+        index?.collides(
+          Math.min(start.x, end.x),
+          Math.min(start.y, end.y),
+          Math.max(start.x, end.x),
+          Math.max(start.y, end.y),
+          collides,
+        ) ?? false
+      );
     };
   }
 
@@ -885,24 +924,20 @@ export class SpatialObstacleIndex {
     itemRadius: number,
   ): boolean {
     if (item.exactShape?.type === "segment") {
-      return (
-        distanceSegmentToSegment(
-          query.start,
-          query.end,
-          item.exactShape.start,
-          item.exactShape.end,
-        ) <=
-        itemRadius + item.exactShape.width / 2 + 1e-9
+      return segmentsWithinDistance(
+        query.start,
+        query.end,
+        item.exactShape.start,
+        item.exactShape.end,
+        itemRadius + item.exactShape.width / 2 + 1e-9,
       );
     }
     if (item.exactShape?.type === "polygon") {
-      return (
-        distanceSegmentToPolygon(
-          query.start,
-          query.end,
-          item.exactShape.points,
-        ) <=
-        itemRadius + 1e-9
+      return segmentWithinPolygonDistance(
+        query.start,
+        query.end,
+        item.exactShape.points,
+        itemRadius + 1e-9,
       );
     }
     if (item.exactShape?.type === "circle") {

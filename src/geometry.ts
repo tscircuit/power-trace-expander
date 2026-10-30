@@ -115,6 +115,57 @@ export const distanceSegmentToPolygon = (
   return minimumDistance;
 };
 
+/** Tests clearance without calculating the full minimum distance. */
+export const segmentsWithinDistance = (
+  aStart: Point,
+  aEnd: Point,
+  bStart: Point,
+  bEnd: Point,
+  threshold: number,
+): boolean => {
+  const axisGap = Math.max(
+    Math.min(aStart.x, aEnd.x) - Math.max(bStart.x, bEnd.x),
+    Math.min(bStart.x, bEnd.x) - Math.max(aStart.x, aEnd.x),
+    Math.min(aStart.y, aEnd.y) - Math.max(bStart.y, bEnd.y),
+    Math.min(bStart.y, bEnd.y) - Math.max(aStart.y, aEnd.y),
+  );
+  if (axisGap > Math.max(0, threshold) + 1e-9) return false;
+  // Preserve the intersection predicate's existing coordinate tolerance.
+  if (axisGap <= 1e-9 && segmentsIntersect(aStart, aEnd, bStart, bEnd)) {
+    return 0 <= threshold;
+  }
+  return (
+    distancePointToSegment(aStart, bStart, bEnd) <= threshold ||
+    distancePointToSegment(aEnd, bStart, bEnd) <= threshold ||
+    distancePointToSegment(bStart, aStart, aEnd) <= threshold ||
+    distancePointToSegment(bEnd, aStart, aEnd) <= threshold
+  );
+};
+
+export const segmentWithinPolygonDistance = (
+  start: Point,
+  end: Point,
+  polygon: Point[],
+  threshold: number,
+): boolean => {
+  if (pointInPolygon(start, polygon) || pointInPolygon(end, polygon)) {
+    return 0 <= threshold;
+  }
+  for (let index = 0; index < polygon.length; index++) {
+    if (
+      segmentsWithinDistance(
+        start,
+        end,
+        polygon[index]!,
+        polygon[(index + 1) % polygon.length]!,
+        threshold,
+      )
+    )
+      return true;
+  }
+  return Number.POSITIVE_INFINITY <= threshold;
+};
+
 export const getApproximationChunkLength = (width: number) =>
   clamp(width * 1.25, 0.25, 0.75);
 
@@ -145,6 +196,37 @@ export function segmentIntersectsRect(
     if (entry > exit) return false;
   }
   return true;
+}
+
+/** Index the original copper capsule without subdividing its centerline. */
+export function createSegmentIndexItems({
+  start,
+  end,
+  width,
+  base,
+}: {
+  start: Point;
+  end: Point;
+  width: number;
+  base: Omit<IndexedObstacle, "minX" | "minY" | "maxX" | "maxY">;
+}): IndexedObstacle[] {
+  const radius = width / 2;
+  const finalPoint = { x: end.x, y: end.y };
+  return [
+    {
+      ...base,
+      minX: Math.min(start.x, finalPoint.x) - radius,
+      minY: Math.min(start.y, finalPoint.y) - radius,
+      maxX: Math.max(start.x, finalPoint.x) + radius,
+      maxY: Math.max(start.y, finalPoint.y) + radius,
+      exactShape: {
+        type: "segment",
+        start: { x: start.x, y: start.y },
+        end: finalPoint,
+        width,
+      },
+    },
+  ];
 }
 
 export function approximateSegmentWithRects({
@@ -200,7 +282,9 @@ const rotatePoint = (point: Point, center: Point, radians: number): Point => {
   };
 };
 
-const getObstacleKind = (obstacle: Obstacle): IndexedObstacle["obstacleKind"] => {
+const getObstacleKind = (
+  obstacle: Obstacle,
+): IndexedObstacle["obstacleKind"] => {
   if (obstacle.isNonPlatedHole) return "hole";
   if (obstacle.connectedTo[0]?.startsWith("pcb_via_")) return "via";
   if (
