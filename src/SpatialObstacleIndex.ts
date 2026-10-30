@@ -258,6 +258,67 @@ export class SpatialObstacleIndex {
     return false;
   }
 
+  /**
+   * Prepare fixed net, layer and clearance rules for segments inside a region.
+   * The returned checker owns its local index for the lifetime of one search.
+   */
+  createSegmentCollisionChecker(
+    query: CollisionQuery,
+    bounds: SimpleRouteJson["bounds"],
+  ): (start: CollisionQuery["start"], end: CollisionQuery["end"]) => boolean {
+    const { radius, candidates, canonicalConnectionNames } =
+      this.getCollisionCandidates(
+        {
+          ...query,
+          start: { x: bounds.minX, y: bounds.minY },
+          end: { x: bounds.maxX, y: bounds.maxY },
+        },
+        true,
+      );
+    const blockers: { item: IndexedObstacle; radius: number }[] = [];
+    for (const itemIndex of candidates) {
+      const itemRadius = this.getItemCollisionRadius(
+        itemIndex,
+        query,
+        canonicalConnectionNames,
+      );
+      if (itemRadius !== null) {
+        blockers.push({ item: this.items[itemIndex]!, radius: itemRadius });
+      }
+    }
+    const index = blockers.length ? new Flatbush(blockers.length) : null;
+    for (const { item } of blockers) {
+      index!.add(item.minX, item.minY, item.maxX, item.maxY);
+    }
+    index?.finish();
+    return (start, end): boolean => {
+      if (
+        Math.min(start.x, end.x) < bounds.minX ||
+        Math.min(start.y, end.y) < bounds.minY ||
+        Math.max(start.x, end.x) > bounds.maxX ||
+        Math.max(start.y, end.y) > bounds.maxY
+      ) {
+        throw new Error("Segment exceeds its prepared collision bounds");
+      }
+      const segment = { ...query, start, end };
+      if (this.isOutsideBounds(segment)) return true;
+      const matches =
+        index?.search(
+          Math.min(start.x, end.x) - radius,
+          Math.min(start.y, end.y) - radius,
+          Math.max(start.x, end.x) + radius,
+          Math.max(start.y, end.y) + radius,
+        ) ?? [];
+      for (const match of matches) {
+        const blocker = blockers[match]!;
+        if (this.itemGeometryCollides(blocker.item, segment, blocker.radius)) {
+          return true;
+        }
+      }
+      return false;
+    };
+  }
+
   findCollisions(query: CollisionQuery): IndexedObstacle[] {
     const { radius, candidates, canonicalConnectionNames } =
       this.getCollisionCandidates(query);
@@ -746,9 +807,25 @@ export class SpatialObstacleIndex {
     query: CollisionQuery,
     radius: number,
     canonicalConnectionNames: string[],
-  ) {
+  ): boolean {
+    const itemRadius = this.getItemCollisionRadius(
+      itemIndex,
+      query,
+      canonicalConnectionNames,
+    );
+    return (
+      itemRadius !== null &&
+      this.itemGeometryCollides(this.items[itemIndex]!, query, itemRadius)
+    );
+  }
+
+  private getItemCollisionRadius(
+    itemIndex: number,
+    query: CollisionQuery,
+    canonicalConnectionNames: string[],
+  ): number | null {
     const item = this.items[itemIndex]!;
-    if (!item.layers.includes(query.layer)) return false;
+    if (!item.layers.includes(query.layer)) return null;
     // Connected copper is one obstacle-free routing region. This mirrors
     // @tscircuit/checks, which exempts same-net trace/trace, trace/pad, and
     // trace/via pairs from clearance errors. Different-net copper continues
@@ -765,13 +842,13 @@ export class SpatialObstacleIndex {
         item.obstacleKind !== "via"
       )
     ) {
-      return false;
+      return null;
     }
     if (
       item.kind === "trace" &&
       query.ignoreTraceIndices?.includes(item.traceIndex ?? -1)
     ) {
-      return false;
+      return null;
     }
     if (
       item.kind === "trace" &&
@@ -781,7 +858,7 @@ export class SpatialObstacleIndex {
       (item.routeStartIndex ?? Number.POSITIVE_INFINITY) <=
         query.ignoreRouteRange.end
     ) {
-      return false;
+      return null;
     }
     const itemClearance =
       query.isVia &&
@@ -799,7 +876,14 @@ export class SpatialObstacleIndex {
                 this.clearance)
               : (query.obstacleClearance ?? this.clearance)
             : this.clearance;
-    const itemRadius = query.width / 2 + itemClearance;
+    return query.width / 2 + itemClearance;
+  }
+
+  private itemGeometryCollides(
+    item: IndexedObstacle,
+    query: CollisionQuery,
+    itemRadius: number,
+  ): boolean {
     if (item.exactShape?.type === "segment") {
       return (
         distanceSegmentToSegment(

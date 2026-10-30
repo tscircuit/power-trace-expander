@@ -101,6 +101,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
   private closedCellCount = 0;
   private targetCell: { row: number; column: number };
   private output: GridRouteOutput | null = null;
+  private collisionChecker!: (start: Point, end: Point) => boolean;
 
   constructor(problem: GridRouteProblem) {
     super();
@@ -164,6 +165,25 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
       this.stats = this.createStats();
       return;
     }
+    this.collisionChecker =
+      problem.obstacleIndex.createSegmentCollisionChecker(
+        {
+          start: problem.start,
+          end: problem.end,
+          layer: problem.layer,
+          width: problem.traceWidth,
+          connectionNames: problem.connectionNames,
+          ignoreTraceIndex: problem.ignoreTraceIndex,
+          ignoreRouteRange: problem.ignoreRouteRange,
+          obstacleClearance: problem.obstacleClearance,
+        },
+        {
+          minX: Math.min(this.searchBounds.minX, problem.start.x, problem.end.x),
+          minY: Math.min(this.searchBounds.minY, problem.start.y, problem.end.y),
+          maxX: Math.max(this.searchBounds.maxX, problem.start.x, problem.end.x),
+          maxY: Math.max(this.searchBounds.maxY, problem.start.y, problem.end.y),
+        },
+      );
     const startCell = this.pointToCell(problem.start);
     this.targetCell = this.pointToCell(problem.end);
     const startNode: SearchNode = {
@@ -274,16 +294,7 @@ export class ObstacleAwareGridRouteSolver extends BaseSolver {
   }
 
   private segmentCollides(start: Point, end: Point) {
-    return this.problem.obstacleIndex.collides({
-      start,
-      end,
-      layer: this.problem.layer,
-      width: this.problem.traceWidth,
-      connectionNames: this.problem.connectionNames,
-      ignoreTraceIndex: this.problem.ignoreTraceIndex,
-      ignoreRouteRange: this.problem.ignoreRouteRange,
-      obstacleClearance: this.problem.obstacleClearance,
-    });
+    return this.collisionChecker(start, end);
   }
 
   private getAllowedConnector(start: SearchNode | Point, end: Point) {
