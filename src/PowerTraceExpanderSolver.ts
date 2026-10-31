@@ -113,7 +113,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private readonly immutableTraceIndices: number[];
   private readonly initialImmutableTraceSignatures = new Map<number, string>();
   private traceOrderCursor = -1;
-  private readonly maxPassCount = 4;
+  private readonly maxPassCount: number;
   private previousWidthDeficit = 0;
   passIndex = 0;
   completedPassCount = 0;
@@ -223,6 +223,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     super();
     this.inputProblem = structuredClone(inputProblem);
     this.options = structuredClone(options);
+    this.maxPassCount = options.maxExpansionPasses ?? 4;
+    if (!Number.isSafeInteger(this.maxPassCount) || this.maxPassCount < 1) {
+      throw new Error("maxExpansionPasses must be a positive safe integer");
+    }
     this.traces = structuredClone(inputProblem.traces ?? []);
     this.connectionNameResolver = new ConnectionNameResolver(
       this.inputProblem,
@@ -687,7 +691,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.options.allowNewVias !== false && this.inputProblem.layerCount >= 2;
     // Planar escapes may need several bounded, 10 mm reroutes to walk a long
     // necked trace into the clear corridor, so allow one attempt per pass.
-    const maximumAttemptCount = canUseVias ? 2 : this.maxPassCount;
+    const maximumAttemptCount = canUseVias ? 2 : 4;
     const priorAttemptCount =
       this.layerAttemptCountByTrace.get(this.traceIndex) ?? 0;
     const priorRerouteCount =
