@@ -41,10 +41,12 @@ type SegmentMeasurement = { length: number; width: number };
 
 const getTraceNames = (trace: SimplifiedPcbTrace) =>
   [
+    trace.pcb_trace_id,
     trace.connection_name,
     trace.source_trace_id,
     trace.rootConnectionName,
     ...(trace.mergedConnectionNames ?? []),
+    ...(trace.connectsTo ?? []),
   ].filter((name): name is string => Boolean(name));
 
 const findConnection = (
@@ -58,6 +60,10 @@ const findConnection = (
       connection.source_trace_id,
       connection.rootConnectionName,
       ...(connection.mergedConnectionNames ?? []),
+      ...connection.pointsToConnect.flatMap((point) => [
+        point.pointId,
+        point.pcb_port_id,
+      ]),
     ]
       .filter((name): name is string => Boolean(name))
       .some((name) => traceNames.includes(name)),
