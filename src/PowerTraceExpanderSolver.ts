@@ -72,7 +72,8 @@ const LAYER_GRID_VARIANTS: Array<{
   { offset: { x: 0.5, y: 0.5 }, strictNecking: false },
 ];
 
-const TOTAL_ITERATION_BUDGET = 8_000_000;
+const TOTAL_CHILD_STEP_BUDGET = 8_000_000;
+const CHILD_STEPS_PER_ITERATION = 64;
 const FINALIZATION_ITERATION_RESERVE_FRACTION = 1 / 8;
 const CLEANUP_SHARE_OF_FINALIZATION_BUDGET = 3 / 4;
 const MAX_RETAINED_FAILED_SUBSOLVERS = 16;
@@ -226,7 +227,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.connectionNameResolver,
     );
     this.activeSubSolver = null;
-    this.MAX_ITERATIONS = TOTAL_ITERATION_BUDGET;
+    this.MAX_ITERATIONS = TOTAL_CHILD_STEP_BUDGET / CHILD_STEPS_PER_ITERATION;
     this.stats = this.createStats();
   }
 
@@ -241,7 +242,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       return;
     }
     if (this.activeSubSolver) {
-      this.stepActiveGridSolver();
+      const child = this.activeSubSolver;
+      for (
+        let stepIndex = 0;
+        stepIndex < CHILD_STEPS_PER_ITERATION;
+        stepIndex++
+      ) {
+        this.stepActiveGridSolver();
+        if (this.activeSubSolver !== child) break;
+      }
       this.stats = this.createStats();
       return;
     }
@@ -351,8 +360,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       maxRerouteLength: 10,
       desiredPadClearance: this.options.powerTraceToPadClearance,
     });
-    const availableFinalizationIterations =
-      this.getRemainingParentIterationsAfterCurrentStep();
+    const availableFinalizationIterations = this.getRemainingChildStepBudget();
     const cleanupIterationBudget =
       availableFinalizationIterations === 0
         ? 0
@@ -413,10 +421,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.startCleanup();
   }
 
-  private getRemainingParentIterationsAfterCurrentStep() {
+  private getRemainingChildStepBudget() {
     // The current parent step has already been counted by BaseSolver. Keep one
     // final parent step available to transition from `complete` to `solved`.
-    return Math.max(0, this.MAX_ITERATIONS - this.iterations - 1);
+    return (
+      Math.max(0, this.MAX_ITERATIONS - this.iterations - 1) *
+      CHILD_STEPS_PER_ITERATION
+    );
   }
 
   private calculateWidthDeficit() {
@@ -1036,7 +1047,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     });
     clearanceRepairSolver.MAX_ITERATIONS = Math.min(
       clearanceRepairSolver.MAX_ITERATIONS,
-      this.getRemainingParentIterationsAfterCurrentStep(),
+      this.getRemainingChildStepBudget(),
     );
     this.clearanceRepairIterationBudget = clearanceRepairSolver.MAX_ITERATIONS;
     this.activeSubSolver = clearanceRepairSolver;

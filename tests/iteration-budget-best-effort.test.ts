@@ -110,11 +110,10 @@ test("top-level final acceptance adopts cleanup's committed prefix", () => {
   solver.iterations = Number(solver.stats.expansionIterationBudget) - 1;
   solver.step();
   expect(solver.phase).toBe("cleanup");
-  solver.step();
+  solver.activeSubSolver!.step();
   expect(solver.activeSubSolver?.iterations).toBeGreaterThan(0);
 
-  solver.MAX_ITERATIONS = solver.iterations + 1;
-  solver.step();
+  solver.tryFinalAcceptance();
 
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
@@ -164,4 +163,71 @@ test("bounds failed-candidate history while preserving useful context", () => {
   expect(solver.failedSubSolverCount).toBeGreaterThan(16);
   expect(solver.stats.failedSubSolverCount).toBe(solver.failedSubSolverCount);
   expect(solver.stats.retainedFailedSubSolverCount).toBe(16);
+});
+
+test("batches 64 child steps in one expander iteration", () => {
+  const solver = new PowerTraceExpanderSolver(
+    structuredClone(simplifiedCases.narrowChannelRetreat),
+  );
+  while (!solver.activeSubSolver && !solver.solved && !solver.failed) {
+    solver.step();
+  }
+  const child = solver.activeSubSolver!;
+  const parentIterations = solver.iterations;
+  const committedTraces = structuredClone(solver.getOutput());
+
+  solver.step();
+
+  expect(child.iterations).toBe(64);
+  expect(solver.iterations).toBe(parentIterations + 1);
+  expect(solver.MAX_ITERATIONS).toBe(125_000);
+  expect(solver.getOutput()).toEqual(committedTraces);
+});
+
+test("stops batching at the child completion boundary", () => {
+  const solver = new PowerTraceExpanderSolver({
+    layerCount: 2,
+    minTraceWidth: 0.15,
+    bounds: { minX: -1, maxX: 1, minY: -1, maxY: 1 },
+    connections: [],
+    obstacles: [],
+    traces: [],
+  });
+  solver.step();
+  const cleanup = solver.activeSubSolver!;
+
+  solver.step();
+
+  expect(cleanup.solved).toBe(true);
+  expect(cleanup.iterations).toBeLessThan(64);
+  expect(solver.phase).toBe("repair-trace-clearance");
+  expect(solver.activeSubSolver?.iterations).toBe(0);
+  solver.solve();
+  expect(solver.solved).toBe(true);
+  const completedIterations = solver.iterations;
+  solver.step();
+  expect(solver.iterations).toBe(completedIterations);
+});
+
+test("a failing child operation immediately stops the batch", () => {
+  const solver = new PowerTraceExpanderSolver({
+    layerCount: 2,
+    minTraceWidth: 0.15,
+    bounds: { minX: -1, maxX: 1, minY: -1, maxY: 1 },
+    connections: [],
+    obstacles: [],
+    traces: [],
+  });
+  solver.step();
+  const cleanup = solver.activeSubSolver!;
+  cleanup._step = () => {
+    if (cleanup.iterations === 3) throw new Error("synthetic cleanup failure");
+  };
+
+  expect(() => solver.step()).toThrow("synthetic cleanup failure");
+
+  expect(solver.failed).toBe(true);
+  expect(cleanup.iterations).toBe(3);
+  solver.step();
+  expect(cleanup.iterations).toBe(3);
 });
