@@ -105,6 +105,11 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   >();
   private connectivityInvariant: PhysicalConnectivityInvariant;
   private lastConnectivitySafeTraces: SimplifiedPcbTrace[];
+  private completedExpansionPass: {
+    traces: SimplifiedPcbTrace[];
+    mutationStats: ReturnType<PowerTraceExpanderSolver["getExpansionMutationStats"]>;
+    pushedTraceIndices: number[];
+  } | null = null;
   private readonly traceOrder: number[];
   private readonly selectedOwnedTraceIndices: number[];
   private readonly selectedCleanupTraceIndices: number[];
@@ -423,6 +428,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.passIndex + 1 < this.maxPassCount &&
       this.lastNormalizedWidthDeficitGain >= 0.001
     ) {
+      // Keep completed work separate from the next pass and its active child.
+      // Validate this candidate through startCleanup if expansion runs out of time.
+      this.completedExpansionPass = {
+        traces: structuredClone(this.traces),
+        mutationStats: this.getExpansionMutationStats(),
+        pushedTraceIndices: [...this.expansionPushedTraceIndices],
+      };
       this.previousWidthDeficit = deficit;
       this.passIndex++;
       this.traceOrderCursor = -1;
@@ -438,6 +450,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
   private startCleanup() {
     this.acceptConnectivityCheckpoint(this.traces, "expansion");
+    this.completedExpansionPass = null;
     this.traceIndex = this.traces.length;
     this.phase = "cleanup";
     const cleanupSolver = new PowerTraceCleanupSolver({
@@ -509,6 +522,18 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeInflationWidth = null;
     this.layerAttempt = null;
     this.discardInFlightExpansion();
+    if (this.completedExpansionPass) {
+      const checkpoint = this.completedExpansionPass;
+      this.traces = structuredClone(checkpoint.traces);
+      Object.assign(this, checkpoint.mutationStats);
+      for (const index of checkpoint.pushedTraceIndices) {
+        this.expansionPushedTraceIndices.add(index);
+      }
+      for (const [key, count] of Object.entries(checkpoint.mutationStats)) {
+        this.discardedExpansionMutationStats![key] -= count;
+      }
+      this.rebuildObstacleIndex();
+    }
     this.startCleanup();
   }
 
@@ -530,8 +555,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.restoreLastConnectivitySafeTraces();
   }
 
-  private captureAndResetExpansionMutationStats() {
-    const mutationStats = {
+  private getExpansionMutationStats() {
+    return {
       recreatedTraceCount: this.recreatedTraceCount,
       expandedSegmentCount: this.expandedSegmentCount,
       intermediateExpandedSegmentCount: this.intermediateExpandedSegmentCount,
@@ -543,6 +568,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       insertedViaCount: this.insertedViaCount,
       neckedLayerSegmentCount: this.neckedLayerSegmentCount,
     };
+  }
+
+  private captureAndResetExpansionMutationStats() {
+    const mutationStats = this.getExpansionMutationStats();
     this.recreatedTraceCount = 0;
     this.expandedSegmentCount = 0;
     this.intermediateExpandedSegmentCount = 0;
