@@ -95,7 +95,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
   ) {
     super();
     this.inputProblem = structuredClone(inputProblem);
-    this.traces = structuredClone(inputProblem.traces);
+    this.traces = this.inputProblem.traces.slice();
     this.corridor = structuredClone(inputProblem.corridor);
     this.mutableTraceIndices = inputProblem.mutableTraceIndices
       ? new Set(inputProblem.mutableTraceIndices)
@@ -407,6 +407,9 @@ export class LocalTraceInflationSolver extends BaseSolver {
   ) {
     const blocker = this.currentBlocker!;
     const range = this.currentRange!;
+    // Failed attempts only inspect copper. Isolate the published output from
+    // the constructor snapshot once an actual replacement has been found.
+    this.traces = structuredClone(this.traces);
     const trace = this.traces[blocker.traceIndex]!;
     const originalStart = trace.route[range.startIndex] as WireRoutePoint;
     const originalEnd = trace.route[range.endIndex] as WireRoutePoint;

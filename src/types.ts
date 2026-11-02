@@ -116,6 +116,8 @@ export type CopperRoutePoint = WireRoutePoint | ViaRoutePoint;
 export type PowerTraceExpanderInput = SimpleRouteJson;
 
 export type PowerTraceExpanderOptions = {
+  /** Maximum completed expansion passes before cleanup. Defaults to four. */
+  maxExpansionPasses?: number;
   /** Restrict the top-level scan while still allowing nearby traces to move. */
   onlyConnectionNames?: readonly string[];
   /**
