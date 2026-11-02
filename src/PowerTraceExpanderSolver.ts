@@ -79,8 +79,8 @@ const LAYER_GRID_VARIANTS: Array<{
   { offset: { x: 0.5, y: 0.5 }, strictNecking: false },
 ];
 
-const TOTAL_CHILD_STEP_BUDGET = 8_000_000;
-const CHILD_STEPS_PER_ITERATION = 64;
+const TOTAL_OPERATION_BUDGET = 8_000_000;
+const OPERATIONS_PER_ITERATION = 64;
 const FINALIZATION_ITERATION_RESERVE_FRACTION = 1 / 8;
 const CLEANUP_SHARE_OF_FINALIZATION_BUDGET = 3 / 4;
 const MAX_RETAINED_FAILED_SUBSOLVERS = 16;
@@ -97,6 +97,7 @@ const isWire = (
 export class PowerTraceExpanderSolver extends BaseSolver {
   readonly inputProblem: PowerTraceExpanderInput;
   readonly options: PowerTraceExpanderOptions;
+  private operationIndex = 0;
   traces: SimplifiedPcbTrace[];
   obstacleIndex: SpatialObstacleIndex;
   private readonly connectionNameResolver: ConnectionNameResolver;
@@ -308,7 +309,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.remainingImmutableViaViolationPairCount =
       this.initialImmutableViaViolationPairCount;
     this.activeSubSolver = null;
-    this.MAX_ITERATIONS = TOTAL_CHILD_STEP_BUDGET / CHILD_STEPS_PER_ITERATION;
+    this.MAX_ITERATIONS = TOTAL_OPERATION_BUDGET / OPERATIONS_PER_ITERATION;
     this.stats = this.createStats();
   }
 
@@ -316,31 +317,35 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     return "PowerTraceExpanderSolver";
   }
 
-  override _step() {
+  override _step(): void {
+    const previousChild = this.activeSubSolver;
+    for (
+      let operationIndex = 0;
+      operationIndex < OPERATIONS_PER_ITERATION;
+      operationIndex++
+    ) {
+      this.operationIndex = operationIndex;
+      this.stepOperation();
+      if (this.solved || this.failed) break;
+    }
+    if (
+      !previousChild ||
+      this.activeSubSolver !== previousChild ||
+      previousChild.solved ||
+      previousChild.failed ||
+      this.MAX_ITERATIONS !== this.statsMaxIterations
+    ) {
+      this.stats = this.createStats();
+    }
+  }
+
+  private stepOperation(): void {
     if (this.shouldStartBudgetFinalization()) {
       this.startBudgetFinalization();
-      this.stats = this.createStats();
       return;
     }
     if (this.activeSubSolver) {
-      const solver = this.activeSubSolver;
-      for (
-        let stepIndex = 0;
-        stepIndex < CHILD_STEPS_PER_ITERATION;
-        stepIndex++
-      ) {
-        this.stepActiveGridSolver();
-        if (this.activeSubSolver !== solver) break;
-      }
-      // Unfinished children only change their own state. Keep the parent's
-      // snapshot until their result is adopted or its public budget changes.
-      if (
-        solver.solved ||
-        solver.failed ||
-        this.MAX_ITERATIONS !== this.statsMaxIterations
-      ) {
-        this.stats = this.createStats();
-      }
+      this.stepActiveGridSolver();
       return;
     }
 
@@ -371,7 +376,6 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         this.solved = true;
         break;
     }
-    this.stats = this.createStats();
   }
 
   private scanNextTrace() {
@@ -481,25 +485,31 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     ) {
       return false;
     }
-    return this.iterations >= this.getExpansionIterationBudget();
+    return this.getOperationCount() >= this.getExpansionOperationBudget();
   }
 
-  private getFinalizationIterationReserve() {
-    return Math.min(
-      Math.max(0, this.MAX_ITERATIONS - 1),
+  private getExpansionOperationBudget(): number {
+    const operationBudget = this.MAX_ITERATIONS * OPERATIONS_PER_ITERATION;
+    const reserve = Math.min(
+      Math.max(0, operationBudget - 1),
       Math.max(
         1,
-        Math.floor(
-          this.MAX_ITERATIONS * FINALIZATION_ITERATION_RESERVE_FRACTION,
-        ),
+        Math.floor(operationBudget * FINALIZATION_ITERATION_RESERVE_FRACTION),
       ),
+    );
+    return Math.max(1, operationBudget - reserve);
+  }
+
+  private getFinalizationIterationReserve(): number {
+    return Math.max(
+      0,
+      this.MAX_ITERATIONS - this.getExpansionIterationBudget(),
     );
   }
 
-  private getExpansionIterationBudget() {
-    return Math.max(
-      1,
-      this.MAX_ITERATIONS - this.getFinalizationIterationReserve(),
+  private getExpansionIterationBudget(): number {
+    return Math.ceil(
+      this.getExpansionOperationBudget() / OPERATIONS_PER_ITERATION,
     );
   }
 
@@ -565,12 +575,20 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.rebuildObstacleIndex();
   }
 
-  private getRemainingChildStepBudget() {
-    // The current parent step has already been counted by BaseSolver. Keep one
-    // final parent step available to transition from `complete` to `solved`.
+  private getOperationCount(): number {
+    if (this.iterations === 0) return 0;
     return (
-      Math.max(0, this.MAX_ITERATIONS - this.iterations - 1) *
-      CHILD_STEPS_PER_ITERATION
+      (this.iterations - 1) * OPERATIONS_PER_ITERATION + this.operationIndex + 1
+    );
+  }
+
+  private getRemainingChildStepBudget(): number {
+    // Reserve one operation for the final transition to solved.
+    return Math.max(
+      0,
+      this.MAX_ITERATIONS * OPERATIONS_PER_ITERATION -
+        this.getOperationCount() -
+        1,
     );
   }
 

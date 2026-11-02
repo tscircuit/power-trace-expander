@@ -46,7 +46,7 @@ test("widens clear intervals and obstacle-reroutes a blocked interval", () => {
 
   solver.step();
   expect(solver.solved).toBe(false);
-  expect(solver.stats.phase).toBe("evaluate-segment");
+  expect(solver.iterations).toBe(1);
 
   solver.solve();
 

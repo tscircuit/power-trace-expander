@@ -112,6 +112,7 @@ test("preserves MangoPi R3C physical endpoint connectivity during power expansio
     connectivityValidationError: null,
     resultStatus: "best_effort",
   });
+  expect(solver.sameNetContactRejectionCount).toBeGreaterThan(0);
   expect(solver.getOutput()).not.toEqual(inputTraces);
 
   const outputConnectivity = connectivityInvariant.validate(solver.getOutput());
