@@ -30,7 +30,7 @@ test("reuses unchanged parent stats without losing snapshots or budget changes",
     const child = solver.activeSubSolver;
     const previousStats = solver.stats;
     const previousSnapshotCount = snapshotCount;
-    const changeBudget = !!child && child.iterations === 1 && !budgetChanged;
+    const changeBudget = !!child && child.iterations > 0 && !budgetChanged;
     if (changeBudget) {
       solver.MAX_ITERATIONS += 8;
       budgetChanged = true;
