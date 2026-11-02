@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { simplifiedCases } from "../fixtures/simplified-cases";
-import { PowerTraceExpanderSolver } from "../src";
+import { PowerTraceCleanupSolver, PowerTraceExpanderSolver } from "../src";
 
 test("final acceptance never applies an in-flight candidate", () => {
   const solver = new PowerTraceExpanderSolver(
@@ -173,18 +173,19 @@ test("batches 64 child steps in one expander iteration", () => {
     solver.step();
   }
   const child = solver.activeSubSolver!;
+  const childIterations = child.iterations;
   const parentIterations = solver.iterations;
   const committedTraces = structuredClone(solver.getOutput());
 
   solver.step();
 
-  expect(child.iterations).toBe(64);
+  expect(child.iterations - childIterations).toBe(64);
   expect(solver.iterations).toBe(parentIterations + 1);
   expect(solver.MAX_ITERATIONS).toBe(125_000);
   expect(solver.getOutput()).toEqual(committedTraces);
 });
 
-test("stops batching at the child completion boundary", () => {
+test("stops a completed expander within its batch", () => {
   const solver = new PowerTraceExpanderSolver({
     layerCount: 2,
     minTraceWidth: 0.15,
@@ -193,20 +194,16 @@ test("stops batching at the child completion boundary", () => {
     obstacles: [],
     traces: [],
   });
-  solver.step();
-  const cleanup = solver.activeSubSolver!;
 
   solver.step();
 
-  expect(cleanup.solved).toBe(true);
-  expect(cleanup.iterations).toBeLessThan(64);
-  expect(solver.phase).toBe("repair-trace-clearance");
-  expect(solver.activeSubSolver?.iterations).toBe(0);
-  solver.solve();
   expect(solver.solved).toBe(true);
-  const completedIterations = solver.iterations;
+  expect(solver.failed).toBe(false);
+  expect(solver.iterations).toBe(1);
+  expect(solver.cleanupCompleted).toBe(true);
+  expect(solver.clearanceRepairCompleted).toBe(true);
   solver.step();
-  expect(solver.iterations).toBe(completedIterations);
+  expect(solver.iterations).toBe(1);
 });
 
 test("a failing child operation immediately stops the batch", () => {
@@ -218,8 +215,13 @@ test("a failing child operation immediately stops the batch", () => {
     obstacles: [],
     traces: [],
   });
-  solver.step();
-  const cleanup = solver.activeSubSolver!;
+  const cleanup = new PowerTraceCleanupSolver({
+    simpleRouteJson: solver.inputProblem,
+    traces: [],
+    traceIndices: [],
+  });
+  solver.phase = "cleanup";
+  solver.activeSubSolver = cleanup;
   cleanup._step = () => {
     if (cleanup.iterations === 3) throw new Error("synthetic cleanup failure");
   };
@@ -230,4 +232,50 @@ test("a failing child operation immediately stops the batch", () => {
   expect(cleanup.iterations).toBe(3);
   solver.step();
   expect(cleanup.iterations).toBe(3);
+});
+
+test("16 batches retain the 1024-operation straight-trace width result", () => {
+  const solver = new PowerTraceExpanderSolver(
+    structuredClone(simplifiedCases.straightClear),
+  );
+  solver.MAX_ITERATIONS = 16;
+
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.budgetLimitedExpansion).toBe(false);
+  const wires = solver
+    .getOutput()[0]!
+    .route.filter((point) => point.route_type === "wire");
+  expect(wires).toHaveLength(5);
+  expect(wires.every((point) => point.width === 0.8)).toBe(true);
+});
+
+test("16 batches retain the 1024-operation cleanup budget", () => {
+  const solver = new PowerTraceExpanderSolver(
+    structuredClone(simplifiedCases.narrowChannelRetreat),
+  );
+  solver.MAX_ITERATIONS = 16;
+
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.budgetLimitedExpansion).toBe(true);
+  expect(solver.cleanupIterationBudget).toBe(95);
+  expect(solver.cleanupCompleted).toBe(true);
+  expect(solver.iterations).toBeLessThanOrEqual(solver.MAX_ITERATIONS);
+});
+
+test("3 batches retain the 192-operation finalization reserve", () => {
+  const solver = new PowerTraceExpanderSolver(
+    structuredClone(simplifiedCases.narrowChannelRetreat),
+  );
+  solver.MAX_ITERATIONS = 3;
+
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.budgetLimitedExpansion).toBe(true);
+  expect(solver.cleanupIterationBudget).toBe(17);
+  expect(solver.iterations).toBeLessThanOrEqual(solver.MAX_ITERATIONS);
 });
