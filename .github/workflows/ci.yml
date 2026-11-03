@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   check:
-    # Keep the ARM architecture used to record the routing snapshots.
-    runs-on: ubuntu-24.04-arm
+    # Keep the macOS ARM environment used for the routing snapshots.
+    runs-on: macos-14
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
