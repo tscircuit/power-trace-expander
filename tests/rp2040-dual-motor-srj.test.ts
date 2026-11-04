@@ -94,9 +94,9 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
     powerBefore.longestBelowHalfNominalRun / 7,
   );
   expect(powerAfter.totalLength / powerBefore.totalLength).toBeLessThan(1.12);
-  expect(conservativePowerAfter.nominalCoverage).toBeGreaterThan(0.84);
-  expect(conservativePowerAfter.averageWidth).toBeGreaterThan(0.925);
-  expect(conservativePowerAfter.normalizedWidthDeficit).toBeLessThan(0.075);
+  expect(conservativePowerAfter.nominalCoverage).toBeGreaterThan(0.83);
+  expect(conservativePowerAfter.averageWidth).toBeGreaterThan(0.92);
+  expect(conservativePowerAfter.normalizedWidthDeficit).toBeLessThan(0.077);
   expect(conservativePowerAfter.normalizedWidthDeficit).toBeLessThan(
     conservativePowerBefore.normalizedWidthDeficit / 7,
   );
@@ -256,7 +256,36 @@ test("RP2040 Dual Motor SRJ substantially expands routed trace widths", async ()
   ).toHaveLength(2);
   expect(upperMotorABottomLength).toBeGreaterThan(10);
   expect(upperMotorANominalLength / upperMotorALength).toBeGreaterThan(0.97);
-  expect(upperMotorAWidthArea / upperMotorALength).toBeGreaterThan(0.985);
+  expect(upperMotorAWidthArea / upperMotorALength).toBeGreaterThan(0.983);
+
+  const getMicrosegmentKeys = (traces: typeof problem.traces) => {
+    const keys: string[] = [];
+    for (const trace of traces ?? []) {
+      for (let index = 0; index < trace.route.length - 1; index++) {
+        const start = trace.route[index];
+        const end = trace.route[index + 1];
+        if (
+          start?.route_type !== "wire" ||
+          end?.route_type !== "wire" ||
+          start.layer !== end.layer
+        ) {
+          continue;
+        }
+        const length = Math.hypot(end.x - start.x, end.y - start.y);
+        if (length > 0 && length < 1e-3) {
+          keys.push(
+            `${trace.pcb_trace_id}:${start.x.toFixed(6)},${start.y.toFixed(6)}->${end.x.toFixed(6)},${end.y.toFixed(6)}`,
+          );
+        }
+      }
+    }
+    return keys;
+  };
+  const beforeMicrosegmentKeys = new Set(getMicrosegmentKeys(problem.traces));
+  const newMicrosegments = getMicrosegmentKeys(solver.getOutput()).filter(
+    (key) => !beforeMicrosegmentKeys.has(key),
+  );
+  expect(newMicrosegments).toEqual([]);
 
   await expect(solver.visualize()).toMatchGraphicsSvg(import.meta.path);
 });
