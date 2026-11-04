@@ -29,6 +29,7 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
     (trace) => trace.connection_name === UPPER_P_MOTOR_A_CONNECTION,
   );
   const targetTrace = output[targetTraceIndex]!;
+  const circuitJsonAfter = getTraceWidthMetrics(problem, [targetTrace]).get(1)!;
   const after = getTraceWidthMetrics(problem, [targetTrace], {
     segmentWidthSemantics: "endpoint-minimum",
   }).get(1)!;
@@ -54,10 +55,14 @@ test("isolated upper P_MOTOR_A uses a wide layer-changing escape", async () => {
   expect(before.nominalCoverage).toBe(0);
   // The final guard keeps the layer-change via out of the terminal pad and
   // constrains the short pad escape to the pad's physical cross-section.
+  expect(circuitJsonAfter.nominalCoverage).toBeGreaterThan(0.97);
+  expect(circuitJsonAfter.averageWidth).toBeGreaterThan(0.985);
+  expect(circuitJsonAfter.normalizedWidthDeficit).toBeLessThan(0.015);
+  expect(circuitJsonAfter.coverageByFraction[0.5]).toBeGreaterThan(0.98);
   expect(after.nominalCoverage).toBeGreaterThan(0.97);
-  expect(after.averageWidth).toBeGreaterThan(0.985);
-  expect(after.normalizedWidthDeficit).toBeLessThan(0.015);
-  expect(after.coverageByFraction[0.5]).toBeGreaterThan(0.98);
+  expect(after.averageWidth).toBeGreaterThan(0.983);
+  expect(after.normalizedWidthDeficit).toBeLessThan(0.017);
+  expect(after.coverageByFraction[0.5]).toBeGreaterThan(0.97);
   expect(after.totalLength / before.totalLength).toBeLessThan(1.3);
   expect(bottomLength).toBeGreaterThan(10);
   expect(
