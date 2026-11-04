@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { simplifiedCases } from "../fixtures/simplified-cases";
-import { PowerTraceExpanderSolver } from "../src";
+import { PowerTraceCleanupSolver, PowerTraceExpanderSolver } from "../src";
 
 test("final acceptance never applies an in-flight candidate", () => {
   const solver = new PowerTraceExpanderSolver(
@@ -110,11 +110,10 @@ test("top-level final acceptance adopts cleanup's committed prefix", () => {
   solver.iterations = Number(solver.stats.expansionIterationBudget) - 1;
   solver.step();
   expect(solver.phase).toBe("cleanup");
-  solver.step();
+  solver.activeSubSolver!.step();
   expect(solver.activeSubSolver?.iterations).toBeGreaterThan(0);
 
-  solver.MAX_ITERATIONS = solver.iterations + 1;
-  solver.step();
+  solver.tryFinalAcceptance();
 
   expect(solver.solved).toBe(true);
   expect(solver.failed).toBe(false);
@@ -164,4 +163,119 @@ test("bounds failed-candidate history while preserving useful context", () => {
   expect(solver.failedSubSolverCount).toBeGreaterThan(16);
   expect(solver.stats.failedSubSolverCount).toBe(solver.failedSubSolverCount);
   expect(solver.stats.retainedFailedSubSolverCount).toBe(16);
+});
+
+test("batches 64 child steps in one expander iteration", () => {
+  const solver = new PowerTraceExpanderSolver(
+    structuredClone(simplifiedCases.narrowChannelRetreat),
+  );
+  while (!solver.activeSubSolver && !solver.solved && !solver.failed) {
+    solver.step();
+  }
+  const child = solver.activeSubSolver!;
+  const childIterations = child.iterations;
+  const parentIterations = solver.iterations;
+  const committedTraces = structuredClone(solver.getOutput());
+
+  solver.step();
+
+  expect(child.iterations - childIterations).toBe(64);
+  expect(solver.iterations).toBe(parentIterations + 1);
+  expect(solver.MAX_ITERATIONS).toBe(125_000);
+  expect(solver.getOutput()).toEqual(committedTraces);
+});
+
+test("stops a completed expander within its batch", () => {
+  const solver = new PowerTraceExpanderSolver({
+    layerCount: 2,
+    minTraceWidth: 0.15,
+    bounds: { minX: -1, maxX: 1, minY: -1, maxY: 1 },
+    connections: [],
+    obstacles: [],
+    traces: [],
+  });
+
+  solver.step();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.failed).toBe(false);
+  expect(solver.iterations).toBe(1);
+  expect(solver.cleanupCompleted).toBe(true);
+  expect(solver.clearanceRepairCompleted).toBe(true);
+  solver.step();
+  expect(solver.iterations).toBe(1);
+});
+
+test("a failing child operation immediately stops the batch", () => {
+  const solver = new PowerTraceExpanderSolver({
+    layerCount: 2,
+    minTraceWidth: 0.15,
+    bounds: { minX: -1, maxX: 1, minY: -1, maxY: 1 },
+    connections: [],
+    obstacles: [],
+    traces: [],
+  });
+  const cleanup = new PowerTraceCleanupSolver({
+    simpleRouteJson: solver.inputProblem,
+    traces: [],
+    traceIndices: [],
+  });
+  solver.phase = "cleanup";
+  solver.activeSubSolver = cleanup;
+  cleanup._step = () => {
+    if (cleanup.iterations === 3) throw new Error("synthetic cleanup failure");
+  };
+
+  expect(() => solver.step()).toThrow("synthetic cleanup failure");
+
+  expect(solver.failed).toBe(true);
+  expect(cleanup.iterations).toBe(3);
+  solver.step();
+  expect(cleanup.iterations).toBe(3);
+});
+
+test("16 batches retain the 1024-operation straight-trace width result", () => {
+  const solver = new PowerTraceExpanderSolver(
+    structuredClone(simplifiedCases.straightClear),
+  );
+  solver.MAX_ITERATIONS = 16;
+
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.budgetLimitedExpansion).toBe(false);
+  const wires = solver
+    .getOutput()[0]!
+    .route.filter((point) => point.route_type === "wire");
+  expect(wires).toHaveLength(5);
+  expect(wires.every((point) => point.width === 0.8)).toBe(true);
+});
+
+test("16 batches retain the 1024-operation cleanup budget", () => {
+  const solver = new PowerTraceExpanderSolver(
+    structuredClone(simplifiedCases.narrowChannelRetreat),
+  );
+  solver.MAX_ITERATIONS = 16;
+
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.budgetLimitedExpansion).toBe(true);
+  expect(solver.cleanupIterationBudget).toBe(95);
+  expect(solver.cleanupCompleted).toBe(true);
+  expect(solver.iterations).toBeLessThanOrEqual(solver.MAX_ITERATIONS);
+});
+
+test("3 batches retain the 192-operation finalization reserve", () => {
+  const solver = new PowerTraceExpanderSolver(
+    structuredClone(simplifiedCases.narrowChannelRetreat),
+  );
+  solver.MAX_ITERATIONS = 3;
+
+  solver.solve();
+
+  expect(solver.solved).toBe(true);
+  expect(solver.budgetLimitedExpansion).toBe(true);
+  expect(solver.cleanupIterationBudget).toBe(17);
+  expect(solver.iterations).toBeLessThanOrEqual(solver.MAX_ITERATIONS);
 });
