@@ -156,7 +156,7 @@ export type IndexedObstacle = {
   maxY: number;
   layers: string[];
   kind: "obstacle" | "trace" | "via";
-  obstacleKind?: "pad" | "via" | "hole" | "other";
+  obstacleKind?: "pad" | "via" | "hole" | "pour" | "other";
   connectionNames: string[];
   /** Stable identity for all indexed chunks from one copper object. */
   copperObjectId?: string;

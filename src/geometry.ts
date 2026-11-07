@@ -286,6 +286,7 @@ const getObstacleKind = (
   obstacle: Obstacle,
 ): IndexedObstacle["obstacleKind"] => {
   if (obstacle.isNonPlatedHole) return "hole";
+  if (obstacle.isCopperPour) return "pour";
   if (obstacle.connectedTo[0]?.startsWith("pcb_via_")) return "via";
   if (
     obstacle.connectedTo[0]?.startsWith("pcb_smtpad_") ||
