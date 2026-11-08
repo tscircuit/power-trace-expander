@@ -304,6 +304,32 @@ const getObstacleKind = (
 export function createObstacleIndexItems(
   obstacle: Obstacle,
 ): IndexedObstacle[] {
+  if (obstacle.holeDiameter !== undefined && !obstacle.isNonPlatedHole) {
+    if (
+      obstacle.shape !== "circle" ||
+      obstacle.width !== obstacle.height ||
+      !Number.isFinite(obstacle.holeDiameter) ||
+      obstacle.holeDiameter <= 0 ||
+      obstacle.holeDiameter > obstacle.width
+    ) {
+      throw new Error("Invalid retained circular drill geometry");
+    }
+    const radius = obstacle.width / 2;
+    return [
+      {
+        minX: obstacle.center.x - radius,
+        maxX: obstacle.center.x + radius,
+        minY: obstacle.center.y - radius,
+        maxY: obstacle.center.y + radius,
+        layers: obstacle.layers,
+        kind: "via",
+        obstacleKind: "via",
+        connectionNames: obstacle.connectedTo,
+        viaHoleDiameter: obstacle.holeDiameter,
+        exactShape: { type: "circle", center: obstacle.center, radius },
+      },
+    ];
+  }
   if (
     obstacle.type !== "rect" ||
     (obstacle.isNonPlatedHole && obstacle.shape === "circle")

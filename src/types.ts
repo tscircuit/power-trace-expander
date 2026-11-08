@@ -78,6 +78,8 @@ export type Obstacle = {
   center: Point;
   width: number;
   height: number;
+  /** Physical circular drill diameter, independent of the copper outline. */
+  holeDiameter?: number;
   ccwRotationDegrees?: number;
   connectedTo: string[];
   isCopperPour?: boolean;
