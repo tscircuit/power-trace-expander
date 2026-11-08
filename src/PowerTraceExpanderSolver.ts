@@ -309,7 +309,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.remainingImmutableViaViolationPairCount =
       this.initialImmutableViaViolationPairCount;
     this.activeSubSolver = null;
-    this.MAX_ITERATIONS = TOTAL_OPERATION_BUDGET / OPERATIONS_PER_ITERATION;
+    const effort = this.options.effort ?? 1;
+    if (!Number.isFinite(effort) || effort <= 0) {
+      throw new Error(
+        "Power trace expansion effort must be positive and finite",
+      );
+    }
+    this.MAX_ITERATIONS = Math.ceil(
+      (TOTAL_OPERATION_BUDGET / OPERATIONS_PER_ITERATION) * effort,
+    );
     this.stats = this.createStats();
   }
 

@@ -116,6 +116,8 @@ export type CopperRoutePoint = WireRoutePoint | ViaRoutePoint;
 export type PowerTraceExpanderInput = SimpleRouteJson;
 
 export type PowerTraceExpanderOptions = {
+  /** Scale the bounded work allowance. Defaults to 1. */
+  effort?: number;
   /** Restrict the top-level scan while still allowing nearby traces to move. */
   onlyConnectionNames?: readonly string[];
   /**

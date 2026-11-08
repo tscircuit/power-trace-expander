@@ -774,7 +774,9 @@ export class SpatialObstacleIndex {
     }
     if (item.exactShape?.type === "circle") {
       const { center, radius } = item.exactShape;
-      return `${objectId}:${item.kind}:${routeRange}:${center.x},${center.y}:${radius}`;
+      // Inserting wire points changes route indices without changing the drill.
+      // Compare its physical site and dimensions across expansion checkpoints.
+      return `${objectId}:${item.kind}:${center.x},${center.y}:${radius}:${item.viaHoleDiameter}`;
     }
     if (item.exactShape?.type === "polygon") {
       return `${objectId}:${item.kind}:${routeRange}:${item.exactShape.points
