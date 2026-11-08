@@ -774,7 +774,9 @@ export class SpatialObstacleIndex {
     }
     if (item.exactShape?.type === "circle") {
       const { center, radius } = item.exactShape;
-      return `${objectId}:${item.kind}:${routeRange}:${center.x},${center.y}:${radius}`;
+      // Inserting wire points changes route indices without changing the drill.
+      // Compare its physical site and dimensions across expansion checkpoints.
+      return `${objectId}:${item.kind}:${center.x},${center.y}:${radius}:${item.viaHoleDiameter}`;
     }
     if (item.exactShape?.type === "polygon") {
       return `${objectId}:${item.kind}:${routeRange}:${item.exactShape.points
@@ -865,6 +867,9 @@ export class SpatialObstacleIndex {
   ): number | null {
     const item = this.items[itemIndex]!;
     if (!item.layers.includes(query.layer)) return null;
+    // Through vias receive antipads when pours are regenerated. Wires still
+    // respect foreign pours so layer changes do not cut a reference plane.
+    if (item.obstacleKind === "pour" && query.isVia) return null;
     // Connected copper is one obstacle-free routing region. This mirrors
     // @tscircuit/checks, which exempts same-net trace/trace, trace/pad, and
     // trace/via pairs from clearance errors. Different-net copper continues
