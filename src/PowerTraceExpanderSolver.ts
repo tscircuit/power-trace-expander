@@ -13,6 +13,11 @@ import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
 import { PowerTraceCleanupSolver } from "./PowerTraceCleanupSolver";
 import { PowerTraceClearanceRepairSolver } from "./PowerTraceClearanceRepairSolver";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
+import {
+  SrjBoardDrcCertificate,
+  type SrjBoardDrcValidation,
+  type SrjDrcCheckpointPhase,
+} from "./SrjBoardDrcCertificate";
 import type {
   GridOffset,
   GridRouteOutput,
@@ -53,6 +58,28 @@ type LayerRouteAttempt = {
   startNeckWidth: number;
   endNeckWidth: number;
   softTraceIndices: number[];
+};
+
+type CommittedMutationStats = {
+  recreatedTraceCount: number;
+  expandedSegmentCount: number;
+  intermediateExpandedSegmentCount: number;
+  pathWidthUpgradeCount: number;
+  reroutedSegmentCount: number;
+  pushedTraceCount: number;
+  elasticPushedTraceCount: number;
+  layerReroutedTraceCount: number;
+  insertedViaCount: number;
+  neckedLayerSegmentCount: number;
+  removedViaPairCount: number;
+  removedViaCount: number;
+  simplifiedPathCount: number;
+  normalizedSegmentCount: number;
+  cleanupClearanceShoveCount: number;
+  relocatedViaCount: number;
+  padClearanceRerouteCount: number;
+  repairedTraceClearanceSegmentCount: number;
+  repairedPadNeckSegmentCount: number;
 };
 
 const GRID_OFFSETS: GridOffset[] = [
@@ -157,6 +184,16 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   cleanupIterationBudget = 0;
   clearanceRepairIterationBudget = 0;
   failedSubSolverCount = 0;
+  readonly drcCertificate: SrjBoardDrcCertificate;
+  private lastValidatedTraces: SimplifiedPcbTrace[];
+  private lastValidatedCommittedStats: CommittedMutationStats;
+  private attemptedMutationStats: CommittedMutationStats;
+  drcValidationCount = 0;
+  drcRollbackCount = 0;
+  readonly drcRollbackPhases: SrjDrcCheckpointPhase[] = [];
+  drcRegressionIds: string[] = [];
+  cleanupRolledBackByDrc = false;
+  clearanceRepairRolledBackByDrc = false;
 
   private readonly inflationAttemptsBySegment = new Map<string, number>();
   private readonly layerAttemptCountByTrace = new Map<number, number>();
@@ -182,11 +219,72 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     super();
     this.inputProblem = structuredClone(inputProblem);
     this.options = structuredClone(options);
-    this.traces = structuredClone(inputProblem.traces ?? []);
+    this.traces = Array.isArray(inputProblem?.traces)
+      ? structuredClone(inputProblem.traces)
+      : [];
+    const sanitizedForResolver: PowerTraceExpanderInput = {
+      ...this.inputProblem,
+      connections: Array.isArray(this.inputProblem?.connections)
+        ? this.inputProblem.connections.filter(
+            (conn) => Boolean(conn) && Array.isArray(conn.pointsToConnect),
+          )
+        : [],
+      obstacles: Array.isArray(this.inputProblem?.obstacles)
+        ? this.inputProblem.obstacles.filter(
+            (obs) => Boolean(obs) && Array.isArray(obs.connectedTo),
+          )
+        : [],
+      fixedTraces: Array.isArray(this.inputProblem?.fixedTraces)
+        ? this.inputProblem.fixedTraces.filter((trace) => Boolean(trace))
+        : [],
+    };
+    const safeInitialTraces = this.traces.filter((trace) => Boolean(trace));
     this.connectionNameResolver = new ConnectionNameResolver(
+      sanitizedForResolver,
+      safeInitialTraces,
+    );
+    this.drcCertificate = new SrjBoardDrcCertificate(
       this.inputProblem,
       this.traces,
+      this.connectionNameResolver,
     );
+    this.lastValidatedTraces = structuredClone(this.traces);
+    this.lastValidatedCommittedStats = this.captureCommittedMutationStats();
+    this.attemptedMutationStats = this.captureCommittedMutationStats();
+
+    if (this.drcCertificate.initialSignature.hasUnsupportedGeometry) {
+      this.traceOrder = [];
+      this.previousWidthDeficit = 0;
+      this.obstacleIndex = new SpatialObstacleIndex(
+        {
+          layerCount:
+            Number.isInteger(this.inputProblem?.layerCount) &&
+            this.inputProblem.layerCount >= 1
+              ? this.inputProblem.layerCount
+              : 2,
+          minTraceWidth:
+            typeof this.inputProblem?.minTraceWidth === "number" &&
+            Number.isFinite(this.inputProblem.minTraceWidth) &&
+            this.inputProblem.minTraceWidth > 0
+              ? this.inputProblem.minTraceWidth
+              : 0.15,
+          bounds: { minX: -1000, maxX: 1000, minY: -1000, maxY: 1000 },
+          connections: [],
+          obstacles: [],
+          fixedTraces: [],
+          traces: [],
+        },
+        [],
+        undefined,
+        [],
+        this.connectionNameResolver,
+      );
+      this.activeSubSolver = null;
+      this.MAX_ITERATIONS = TOTAL_OPERATION_BUDGET / OPERATIONS_PER_ITERATION;
+      this.stats = this.createStats();
+      return;
+    }
+
     const selectedConnectionNames = options.onlyConnectionNames
       ? new Set(
           this.connectionNameResolver.canonicalize([
@@ -250,6 +348,13 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private stepOperation(): void {
+    if (this.drcCertificate.initialSignature.hasUnsupportedGeometry) {
+      this.validateCurrentTracesAtBoundary("final");
+      this.phase = "complete";
+      this.progress = 1;
+      this.solved = true;
+      return;
+    }
     if (this.shouldStartBudgetFinalization()) {
       this.startBudgetFinalization();
       return;
@@ -282,6 +387,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         // The active clearance repair solver is stepped before the phase switch.
         break;
       case "complete":
+        this.validateCurrentTracesAtBoundary("final");
         this.solved = true;
         break;
     }
@@ -323,6 +429,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private finishOrStartNextPass() {
+    this.validateCurrentTracesAtBoundary("expansion");
     const { deficit, nominalArea } = this.calculateWidthDeficit();
     const deficitGain = this.previousWidthDeficit - deficit;
     this.lastNormalizedWidthDeficitGain =
@@ -427,6 +534,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeInflationKey = null;
     this.activeInflationWidth = null;
     this.layerAttempt = null;
+    this.validateCurrentTracesAtBoundary("budget-finalization");
     this.startCleanup();
   }
 
@@ -1019,20 +1127,61 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private adoptCleanupOutput(solver: PowerTraceCleanupSolver) {
-    this.traces = solver.getOutput();
-    this.cleanupCompleted = !solver.budgetLimited;
-    this.cleanupBestEffortAccepted = solver.budgetLimited;
+    const candidateTraces = solver.getOutput();
     const stats = solver.stats as Record<string, unknown>;
-    this.removedViaPairCount = Number(stats.viaPairCountRemoved ?? 0);
-    this.removedViaCount = Number(stats.viaCountRemoved ?? 0);
-    this.simplifiedPathCount = Number(stats.simplifiedPathCount ?? 0);
-    this.normalizedSegmentCount = Number(stats.normalizedSegmentCount ?? 0);
-    this.cleanupClearanceShoveCount = Number(
+    const attemptedRemovedViaPairs = Number(stats.viaPairCountRemoved ?? 0);
+    const attemptedRemovedVias = Number(stats.viaCountRemoved ?? 0);
+    const attemptedSimplifiedPaths = Number(stats.simplifiedPathCount ?? 0);
+    const attemptedNormalizedSegments = Number(
+      stats.normalizedSegmentCount ?? 0,
+    );
+    const attemptedCleanupShoves = Number(
       stats.committedClearanceShoveCount ?? 0,
     );
-    this.relocatedViaCount = Number(stats.relocatedViaCount ?? 0);
+    const attemptedRelocatedVias = Number(stats.relocatedViaCount ?? 0);
+    const attemptedPadClearanceReroutes = Number(
+      stats.padClearanceRerouteCount ?? 0,
+    );
+
+    this.attemptedMutationStats.removedViaPairCount += attemptedRemovedViaPairs;
+    this.attemptedMutationStats.removedViaCount += attemptedRemovedVias;
+    this.attemptedMutationStats.simplifiedPathCount += attemptedSimplifiedPaths;
+    this.attemptedMutationStats.normalizedSegmentCount +=
+      attemptedNormalizedSegments;
+    this.attemptedMutationStats.cleanupClearanceShoveCount +=
+      attemptedCleanupShoves;
+    this.attemptedMutationStats.relocatedViaCount += attemptedRelocatedVias;
+    this.attemptedMutationStats.padClearanceRerouteCount +=
+      attemptedPadClearanceReroutes;
+
+    const validation = this.validateCandidateTracesAtBoundary(
+      "cleanup",
+      candidateTraces,
+    );
+    if (!validation.safe) {
+      this.traces = structuredClone(this.lastValidatedTraces);
+      this.restoreCommittedMutationStats(this.lastValidatedCommittedStats);
+      this.cleanupCompleted = false;
+      this.cleanupBestEffortAccepted = false;
+      this.cleanupRolledBackByDrc = true;
+      if (!this.drcCertificate.initialSignature.hasUnsupportedGeometry) {
+        this.rebuildObstacleIndex();
+      }
+      return;
+    }
+
+    this.traces = candidateTraces;
+    this.cleanupCompleted = !solver.budgetLimited;
+    this.cleanupBestEffortAccepted = solver.budgetLimited;
+    this.cleanupRolledBackByDrc = false;
+    this.removedViaPairCount = attemptedRemovedViaPairs;
+    this.removedViaCount = attemptedRemovedVias;
+    this.simplifiedPathCount = attemptedSimplifiedPaths;
+    this.normalizedSegmentCount = attemptedNormalizedSegments;
+    this.cleanupClearanceShoveCount = attemptedCleanupShoves;
+    this.relocatedViaCount = attemptedRelocatedVias;
     this.unresolvedViaCount = Number(stats.unresolvedViaCount ?? 0);
-    this.padClearanceRerouteCount = Number(stats.padClearanceRerouteCount ?? 0);
+    this.padClearanceRerouteCount = attemptedPadClearanceReroutes;
     this.unresolvedPadClearanceCount = Number(
       stats.unresolvedPadClearanceCount ?? 0,
     );
@@ -1052,6 +1201,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       ...((stats.remainingPadClearanceViolationCountByClearance ??
         {}) as Record<string, number>),
     };
+    this.lastValidatedTraces = structuredClone(this.traces);
+    this.lastValidatedCommittedStats = this.captureCommittedMutationStats();
     this.rebuildObstacleIndex();
   }
 
@@ -1088,19 +1239,47 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private adoptClearanceRepairOutput(solver: PowerTraceClearanceRepairSolver) {
-    this.traces = solver.getOutput();
-    this.clearanceRepairCompleted = !solver.budgetLimited;
-    this.clearanceRepairBestEffortAccepted = solver.budgetLimited;
+    const candidateTraces = solver.getOutput();
     const stats = solver.stats as Record<string, unknown>;
-    this.repairedTraceClearanceSegmentCount = Number(
+    const attemptedRepairedTraceSegments = Number(
       stats.repairedSegmentCount ?? 0,
     );
-    this.repairedPadNeckSegmentCount = Number(
+    const attemptedRepairedPadNecks = Number(
       stats.repairedPadNeckSegmentCount ?? 0,
     );
+
+    this.attemptedMutationStats.repairedTraceClearanceSegmentCount +=
+      attemptedRepairedTraceSegments;
+    this.attemptedMutationStats.repairedPadNeckSegmentCount +=
+      attemptedRepairedPadNecks;
+
+    const validation = this.validateCandidateTracesAtBoundary(
+      "clearance-repair",
+      candidateTraces,
+    );
+    if (!validation.safe) {
+      this.traces = structuredClone(this.lastValidatedTraces);
+      this.restoreCommittedMutationStats(this.lastValidatedCommittedStats);
+      this.clearanceRepairCompleted = false;
+      this.clearanceRepairBestEffortAccepted = false;
+      this.clearanceRepairRolledBackByDrc = true;
+      if (!this.drcCertificate.initialSignature.hasUnsupportedGeometry) {
+        this.rebuildObstacleIndex();
+      }
+      return;
+    }
+
+    this.traces = candidateTraces;
+    this.clearanceRepairCompleted = !solver.budgetLimited;
+    this.clearanceRepairBestEffortAccepted = solver.budgetLimited;
+    this.clearanceRepairRolledBackByDrc = false;
+    this.repairedTraceClearanceSegmentCount = attemptedRepairedTraceSegments;
+    this.repairedPadNeckSegmentCount = attemptedRepairedPadNecks;
     this.unresolvedTraceClearanceSegmentCount = Number(
       stats.unresolvedSegmentCount ?? 0,
     );
+    this.lastValidatedTraces = structuredClone(this.traces);
+    this.lastValidatedCommittedStats = this.captureCommittedMutationStats();
     this.rebuildObstacleIndex();
   }
 
@@ -2210,16 +2389,113 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.failedSubSolvers[MAX_RETAINED_FAILED_SUBSOLVERS - 1] = solver;
   }
 
+  private captureCommittedMutationStats(): CommittedMutationStats {
+    return {
+      recreatedTraceCount: this.recreatedTraceCount,
+      expandedSegmentCount: this.expandedSegmentCount,
+      intermediateExpandedSegmentCount: this.intermediateExpandedSegmentCount,
+      pathWidthUpgradeCount: this.pathWidthUpgradeCount,
+      reroutedSegmentCount: this.reroutedSegmentCount,
+      pushedTraceCount: this.pushedTraceCount,
+      elasticPushedTraceCount: this.elasticPushedTraceCount,
+      layerReroutedTraceCount: this.layerReroutedTraceCount,
+      insertedViaCount: this.insertedViaCount,
+      neckedLayerSegmentCount: this.neckedLayerSegmentCount,
+      removedViaPairCount: this.removedViaPairCount,
+      removedViaCount: this.removedViaCount,
+      simplifiedPathCount: this.simplifiedPathCount,
+      normalizedSegmentCount: this.normalizedSegmentCount,
+      cleanupClearanceShoveCount: this.cleanupClearanceShoveCount,
+      relocatedViaCount: this.relocatedViaCount,
+      padClearanceRerouteCount: this.padClearanceRerouteCount,
+      repairedTraceClearanceSegmentCount:
+        this.repairedTraceClearanceSegmentCount,
+      repairedPadNeckSegmentCount: this.repairedPadNeckSegmentCount,
+    };
+  }
+
+  private restoreCommittedMutationStats(snapshot: CommittedMutationStats) {
+    this.recreatedTraceCount = snapshot.recreatedTraceCount;
+    this.expandedSegmentCount = snapshot.expandedSegmentCount;
+    this.intermediateExpandedSegmentCount =
+      snapshot.intermediateExpandedSegmentCount;
+    this.pathWidthUpgradeCount = snapshot.pathWidthUpgradeCount;
+    this.reroutedSegmentCount = snapshot.reroutedSegmentCount;
+    this.pushedTraceCount = snapshot.pushedTraceCount;
+    this.elasticPushedTraceCount = snapshot.elasticPushedTraceCount;
+    this.layerReroutedTraceCount = snapshot.layerReroutedTraceCount;
+    this.insertedViaCount = snapshot.insertedViaCount;
+    this.neckedLayerSegmentCount = snapshot.neckedLayerSegmentCount;
+    this.removedViaPairCount = snapshot.removedViaPairCount;
+    this.removedViaCount = snapshot.removedViaCount;
+    this.simplifiedPathCount = snapshot.simplifiedPathCount;
+    this.normalizedSegmentCount = snapshot.normalizedSegmentCount;
+    this.cleanupClearanceShoveCount = snapshot.cleanupClearanceShoveCount;
+    this.relocatedViaCount = snapshot.relocatedViaCount;
+    this.padClearanceRerouteCount = snapshot.padClearanceRerouteCount;
+    this.repairedTraceClearanceSegmentCount =
+      snapshot.repairedTraceClearanceSegmentCount;
+    this.repairedPadNeckSegmentCount = snapshot.repairedPadNeckSegmentCount;
+  }
+
+  private validateCandidateTracesAtBoundary(
+    phase: SrjDrcCheckpointPhase,
+    candidateTraces: readonly SimplifiedPcbTrace[],
+  ): SrjBoardDrcValidation {
+    this.drcValidationCount++;
+    const validation = this.drcCertificate.validate(candidateTraces);
+    if (validation.safe) {
+      this.drcCertificate.accept(validation.candidate);
+      return validation;
+    }
+    this.drcRollbackCount++;
+    this.drcRollbackPhases.push(phase);
+    this.drcRegressionIds = validation.comparison.regressions.map(
+      (regression) => regression.id,
+    );
+    return validation;
+  }
+
+  private validateCurrentTracesAtBoundary(phase: SrjDrcCheckpointPhase) {
+    const currentStats = this.captureCommittedMutationStats();
+    const statKeys = Object.keys(currentStats) as Array<
+      keyof CommittedMutationStats
+    >;
+    for (const key of statKeys) {
+      this.attemptedMutationStats[key] += Math.max(
+        0,
+        currentStats[key] - this.lastValidatedCommittedStats[key],
+      );
+    }
+    const validation = this.validateCandidateTracesAtBoundary(
+      phase,
+      this.traces,
+    );
+    if (validation.safe) {
+      this.lastValidatedTraces = structuredClone(this.traces);
+      this.lastValidatedCommittedStats = this.captureCommittedMutationStats();
+      return;
+    }
+    this.traces = structuredClone(this.lastValidatedTraces);
+    this.restoreCommittedMutationStats(this.lastValidatedCommittedStats);
+    if (!this.drcCertificate.initialSignature.hasUnsupportedGeometry) {
+      this.rebuildObstacleIndex();
+    }
+  }
+
   override tryFinalAcceptance() {
     this.finalAcceptanceUsed = true;
+    let adoptedChildBoundary = false;
     if (this.activeSubSolver instanceof PowerTraceCleanupSolver) {
       this.activeSubSolver.tryFinalAcceptance();
       this.adoptCleanupOutput(this.activeSubSolver);
+      adoptedChildBoundary = true;
     } else if (
       this.activeSubSolver instanceof PowerTraceClearanceRepairSolver
     ) {
       this.activeSubSolver.tryFinalAcceptance();
       this.adoptClearanceRepairOutput(this.activeSubSolver);
+      adoptedChildBoundary = true;
     }
     this.activeSubSolver = null;
     this.pendingLayerOutput = null;
@@ -2227,15 +2503,22 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeInflationKey = null;
     this.activeInflationWidth = null;
     this.layerAttempt = null;
+    if (!adoptedChildBoundary) {
+      this.validateCurrentTracesAtBoundary("final");
+    }
     this.traceIndex = this.traces.length;
     this.phase = "complete";
-    this.rebuildObstacleIndex();
+    if (!this.drcCertificate.initialSignature.hasUnsupportedGeometry) {
+      this.rebuildObstacleIndex();
+    }
     this.progress = 1;
     this.solved = true;
     this.stats = this.createStats();
   }
 
   private createStats() {
+    const hasInitialUnsupportedGeometry =
+      this.drcCertificate.initialSignature.hasUnsupportedGeometry;
     return {
       phase: this.phase,
       pass: this.passIndex + 1,
@@ -2266,6 +2549,40 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       attemptedGridCount: this.attemptedGridCount,
       attemptedLayerGridCount: this.attemptedLayerGridCount,
       attemptedInflationCount: this.attemptedInflationCount,
+      attemptedRecreatedTraceCount:
+        this.attemptedMutationStats.recreatedTraceCount,
+      attemptedExpandedSegmentCount:
+        this.attemptedMutationStats.expandedSegmentCount,
+      attemptedIntermediateExpandedSegmentCount:
+        this.attemptedMutationStats.intermediateExpandedSegmentCount,
+      attemptedPathWidthUpgradeCount:
+        this.attemptedMutationStats.pathWidthUpgradeCount,
+      attemptedReroutedSegmentCount:
+        this.attemptedMutationStats.reroutedSegmentCount,
+      attemptedPushedTraceCount: this.attemptedMutationStats.pushedTraceCount,
+      attemptedElasticPushedTraceCount:
+        this.attemptedMutationStats.elasticPushedTraceCount,
+      attemptedLayerReroutedTraceCount:
+        this.attemptedMutationStats.layerReroutedTraceCount,
+      attemptedInsertedViaCount: this.attemptedMutationStats.insertedViaCount,
+      attemptedNeckedLayerSegmentCount:
+        this.attemptedMutationStats.neckedLayerSegmentCount,
+      attemptedRemovedViaPairCount:
+        this.attemptedMutationStats.removedViaPairCount,
+      attemptedRemovedViaCount: this.attemptedMutationStats.removedViaCount,
+      attemptedSimplifiedPathCount:
+        this.attemptedMutationStats.simplifiedPathCount,
+      attemptedNormalizedSegmentCount:
+        this.attemptedMutationStats.normalizedSegmentCount,
+      attemptedCleanupClearanceShoveCount:
+        this.attemptedMutationStats.cleanupClearanceShoveCount,
+      attemptedRelocatedViaCount: this.attemptedMutationStats.relocatedViaCount,
+      attemptedPadClearanceRerouteCount:
+        this.attemptedMutationStats.padClearanceRerouteCount,
+      attemptedRepairedTraceClearanceSegmentCount:
+        this.attemptedMutationStats.repairedTraceClearanceSegmentCount,
+      attemptedRepairedPadNeckSegmentCount:
+        this.attemptedMutationStats.repairedPadNeckSegmentCount,
       activeInflationWidth: this.activeInflationWidth,
       pushedTraceCount: this.pushedTraceCount,
       elasticPushedTraceCount: this.elasticPushedTraceCount,
@@ -2301,22 +2618,48 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       clearanceRepairCompleted: this.clearanceRepairCompleted,
       cleanupBestEffortAccepted: this.cleanupBestEffortAccepted,
       clearanceRepairBestEffortAccepted: this.clearanceRepairBestEffortAccepted,
-      cleanupStatus: this.cleanupBestEffortAccepted
-        ? "budget_limited"
-        : this.cleanupCompleted
-          ? "completed"
-          : this.phase === "cleanup"
-            ? "in_progress"
-            : "not_started",
-      clearanceRepairStatus: this.clearanceRepairBestEffortAccepted
-        ? "budget_limited"
-        : this.clearanceRepairCompleted
-          ? "completed"
-          : this.phase === "repair-trace-clearance"
-            ? "in_progress"
-            : "not_started",
+      cleanupStatus: this.cleanupRolledBackByDrc
+        ? "drc_rollback"
+        : this.cleanupBestEffortAccepted
+          ? "budget_limited"
+          : this.cleanupCompleted
+            ? "completed"
+            : this.phase === "cleanup"
+              ? "in_progress"
+              : "not_started",
+      clearanceRepairStatus: this.clearanceRepairRolledBackByDrc
+        ? "drc_rollback"
+        : this.clearanceRepairBestEffortAccepted
+          ? "budget_limited"
+          : this.clearanceRepairCompleted
+            ? "completed"
+            : this.phase === "repair-trace-clearance"
+              ? "in_progress"
+              : "not_started",
       cleanupIterationBudget: this.cleanupIterationBudget,
       clearanceRepairIterationBudget: this.clearanceRepairIterationBudget,
+      drcCertificateStatus: hasInitialUnsupportedGeometry
+        ? "unsupported_geometry_fail_closed"
+        : this.drcRollbackCount > 0
+          ? "rolled_back"
+          : "certified",
+      drcValidationCount: this.drcValidationCount,
+      drcRollbackCount: this.drcRollbackCount,
+      drcRollbackPhases: [...this.drcRollbackPhases],
+      drcRegressionIds: [...this.drcRegressionIds],
+      drcUnsupportedGeometryReasons: [
+        ...this.drcCertificate.baseline.unsupportedGeometryReasons,
+      ],
+      initialDrcViolationCount:
+        this.drcCertificate.initialSignature.violations.length,
+      remainingDrcViolationCount:
+        this.drcCertificate.baseline.violations.length,
+      initialDrcViolationCountByKind: {
+        ...this.drcCertificate.initialSignature.violationCountByKind,
+      },
+      remainingDrcViolationCountByKind: {
+        ...this.drcCertificate.baseline.violationCountByKind,
+      },
       completionReason:
         this.phase !== "complete" && !this.solved
           ? null
@@ -2328,12 +2671,18 @@ export class PowerTraceExpanderSolver extends BaseSolver {
                 ? "cleanup_budget"
                 : this.clearanceRepairBestEffortAccepted
                   ? "clearance_repair_budget"
-                  : "completed",
+                  : hasInitialUnsupportedGeometry
+                    ? "unsupported_geometry"
+                    : this.drcRollbackCount > 0
+                      ? "drc_rollback"
+                      : "completed",
       resultStatus:
         this.finalAcceptanceUsed ||
         this.budgetLimitedExpansion ||
         this.cleanupBestEffortAccepted ||
-        this.clearanceRepairBestEffortAccepted
+        this.clearanceRepairBestEffortAccepted ||
+        hasInitialUnsupportedGeometry ||
+        this.drcRollbackCount > 0
           ? "best_effort"
           : "complete",
       failedSubSolverCount: this.failedSubSolverCount,
@@ -2361,7 +2710,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   override getOutput(): PowerTraceExpanderOutput {
-    return this.traces;
+    return this.solved
+      ? structuredClone(this.lastValidatedTraces)
+      : this.traces;
   }
 
   override visualize(): GraphicsObject {
