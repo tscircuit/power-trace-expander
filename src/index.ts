@@ -16,6 +16,21 @@ export {
 export { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 export { ConnectionNameResolver } from "./ConnectionNameResolver";
 export {
+  compareSrjBoardDrcSignatures,
+  computeSrjBoardDrcSignature,
+  DRC_GAP_EPSILON,
+  SrjBoardDrcCertificate,
+} from "./SrjBoardDrcCertificate";
+export type {
+  SrjBoardDrcComparison,
+  SrjBoardDrcRegression,
+  SrjBoardDrcSignature,
+  SrjBoardDrcValidation,
+  SrjBoardDrcViolation,
+  SrjDrcCheckpointPhase,
+  SrjDrcViolationKind,
+} from "./SrjBoardDrcCertificate";
+export {
   measureTraceWidths,
   TRACE_WIDTH_COVERAGE_FRACTIONS,
 } from "./measureTraceWidths";
