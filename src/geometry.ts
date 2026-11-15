@@ -251,10 +251,13 @@ export function approximateObstacleWithRects(
         kind: "obstacle",
         obstacleKind: obstacle.isNonPlatedHole
           ? "hole"
-          : obstacle.connectedTo[0]?.startsWith("pcb_via_")
+          : obstacle.connectedTo.some((name) => name.startsWith("pcb_via_"))
             ? "via"
-            : obstacle.connectedTo[0]?.startsWith("pcb_smtpad_") ||
-                obstacle.connectedTo[0]?.startsWith("pcb_plated_hole_")
+            : obstacle.connectedTo.some(
+                  (name) =>
+                    name.startsWith("pcb_smtpad_") ||
+                    name.startsWith("pcb_plated_hole_"),
+                )
               ? "pad"
               : "other",
         connectionNames: obstacle.connectedTo,
