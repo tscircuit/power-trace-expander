@@ -1,0 +1,44 @@
+<svg width="1200" height="520" viewBox="0 0 1200 520" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><g><polyline data-points="-4,0 4,0" data-type="line" data-label="" points="127.2095991830482,249.72002382775935 493.2039826397753,249.72002382775935" fill="none" stroke="#15803d" stroke-width="13.724789379627266"/></g><g><polyline data-points="8.5,0 16.5,0" data-type="line" data-label="" points="699.0758233341844,249.72002382775935 1065.0702067909115,249.72002382775935" fill="none" stroke="#dc2626" stroke-width="13.724789379627266"/></g><g><rect data-type="rect" data-label="" data-x="0" data-y="0" x="81.46030125095729" y="112.4721300314867" width="457.49297932090894" height="274.4957875925453" fill="transparent" stroke="#cbd5e1" stroke-width="0.021858258928571427"/></g><g><rect data-type="rect" data-label="" data-x="0" data-y="0" x="172.95889711513905" y="194.82086630925028" width="274.4957875925454" height="109.79831503701814" fill="rgba(37,99,235,0.15)" stroke="#64748b" stroke-width="0.021858258928571427"/></g><g><rect data-type="rect" data-label="" data-x="12.5" data-y="0" x="653.3265254020935" y="112.4721300314867" width="457.49297932090894" height="274.4957875925453" fill="transparent" stroke="#cbd5e1" stroke-width="0.021858258928571427"/></g><g><rect data-type="rect" data-label="" data-x="12.5" data-y="0" x="744.8251212662753" y="194.82086630925028" width="274.4957875925453" height="109.79831503701814" fill="rgba(234,88,12,0.20)" stroke="#64748b" stroke-width="0.021858258928571427"/></g><text data-type="text" data-label="POWER query: allowed through its own pad" data-x="-5" data-y="-3.5357142857142856" x="81.46030125095731" y="411.47647008765216" fill="#334155" font-size="10.892689983831163" font-family="sans-serif" text-anchor="start" dominant-baseline="central">POWER query: allowed through its own pad</text><text data-type="text" data-label="One alias list shared by 40 collision cells" data-x="-5" data-y="-3.892857142857143" x="81.46030125095731" y="427.81550506339886" fill="#334155" font-size="10.892689983831163" font-family="sans-serif" text-anchor="start" dominant-baseline="central">One alias list shared by 40 collision cells</text><text data-type="text" data-label="POWER query: blocked by the SIGNAL pad" data-x="7.5" data-y="-3.5357142857142856" x="653.3265254020935" y="411.47647008765216" fill="#334155" font-size="10.892689983831163" font-family="sans-serif" text-anchor="start" dominant-baseline="central">POWER query: blocked by the SIGNAL pad</text><text data-type="text" data-label="Same array, same length; aliases refreshed" data-x="7.5" data-y="-3.892857142857143" x="653.3265254020935" y="427.81550506339886" fill="#334155" font-size="10.892689983831163" font-family="sans-serif" text-anchor="start" dominant-baseline="central">Same array, same length; aliases refreshed</text><text data-type="text" data-label="Initial index: pad belongs to POWER" data-x="0" data-y="3.5625" x="310.20679091141176" y="86.73814994468555" fill="black" font-size="25.733980086801125" font-family="sans-serif" text-anchor="middle" dominant-baseline="text-after-edge">Initial index: pad belongs to POWER</text><text data-type="text" data-label="Rebuilt index: pad belongs to SIGNAL" data-x="12.5" data-y="3.5625" x="882.0730150625479" y="86.73814994468555" fill="black" font-size="25.733980086801125" font-family="sans-serif" text-anchor="middle" dominant-baseline="text-after-edge">Rebuilt index: pad belongs to SIGNAL</text><g id="crosshair" style="display: none"><line id="crosshair-h" y1="0" y2="520" stroke="#666" stroke-width="0.5"/><line id="crosshair-v" x1="0" x2="1200" stroke="#666" stroke-width="0.5"/><text id="coordinates" font-family="monospace" font-size="12" fill="#666"></text></g><script><![CDATA[
+              document.currentScript.parentElement.addEventListener('mousemove', (e) => {
+                const svg = e.currentTarget;
+                const rect = svg.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const crosshair = svg.getElementById('crosshair');
+                const h = svg.getElementById('crosshair-h');
+                const v = svg.getElementById('crosshair-v');
+                const coords = svg.getElementById('coordinates');
+
+                crosshair.style.display = 'block';
+                h.setAttribute('x1', '0');
+                h.setAttribute('x2', '1200');
+                h.setAttribute('y1', y);
+                h.setAttribute('y2', y);
+                v.setAttribute('x1', x);
+                v.setAttribute('x2', x);
+                v.setAttribute('y1', '0');
+                v.setAttribute('y2', '520');
+
+                // Calculate real coordinates using inverse transformation
+                const matrix = {"a":45.74929793209089,"c":0,"e":310.20679091141176,"b":0,"d":-45.74929793209089,"f":249.72002382775935};
+                // Manually invert and apply the affine transform
+                // Since we only use translate and scale, we can directly compute:
+                // x' = (x - tx) / sx
+                // y' = (y - ty) / sy
+                const sx = matrix.a;
+                const sy = matrix.d;
+                const tx = matrix.e;
+                const ty = matrix.f;
+                const realPoint = {
+                  x: (x - tx) / sx,
+                  y: (y - ty) / sy // Flip y back since we used negative scale
+                }
+
+                coords.textContent = `(${realPoint.x.toFixed(2)}, ${realPoint.y.toFixed(2)})`;
+                coords.setAttribute('x', (x + 5).toString());
+                coords.setAttribute('y', (y - 5).toString());
+              });
+              document.currentScript.parentElement.addEventListener('mouseleave', () => {
+                document.currentScript.parentElement.getElementById('crosshair').style.display = 'none';
+              });
+            ]]></script></svg>

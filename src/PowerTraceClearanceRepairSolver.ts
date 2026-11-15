@@ -42,6 +42,7 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   budgetLimited = false;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly nominalWidthByTraceId = new Map<string, number>();
   private readonly minimumTraceWidth: number;
   private readonly traceIndices: number[];
 
@@ -357,6 +358,8 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
   }
 
   private resolveNominalTraceWidth(trace: SimplifiedPcbTrace): number {
+    const cached = this.nominalWidthByTraceId.get(trace.pcb_trace_id);
+    if (cached !== undefined) return cached;
     const traceNames = new Set(
       this.connectionNameResolver.canonicalize(
         this.getTraceConnectionNames(trace),
@@ -375,13 +378,15 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
           )
           .some((name) => traceNames.has(name)),
     );
-    return Math.max(
+    const nominalWidth = Math.max(
       connection?.nominalTraceWidth ??
         connection?.width ??
         this.inputProblem.simpleRouteJson.nominalTraceWidth ??
         this.minimumTraceWidth,
       this.minimumTraceWidth,
     );
+    this.nominalWidthByTraceId.set(trace.pcb_trace_id, nominalWidth);
+    return nominalWidth;
   }
 
   private segmentHasForeignTraceCollision(routeIndex: number, width: number) {

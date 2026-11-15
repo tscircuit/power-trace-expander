@@ -94,6 +94,10 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   traces: SimplifiedPcbTrace[];
   obstacleIndex: SpatialObstacleIndex;
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly connectionByTraceId = new Map<
+    string,
+    SimpleRouteConnection | null
+  >();
   private readonly traceOrder: number[];
   private traceOrderCursor = -1;
   private readonly maxPassCount = 4;
@@ -2128,10 +2132,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   }
 
   private findConnectionForTrace(trace: SimplifiedPcbTrace) {
+    const cached = this.connectionByTraceId.get(trace.pcb_trace_id);
+    if (cached !== undefined) return cached ?? undefined;
     const traceNames = this.getTraceConnectionNames(trace);
-    return this.inputProblem.connections.find((candidate) =>
-      this.connectionMatchesTrace(candidate, traceNames),
-    );
+    const connection =
+      this.inputProblem.connections.find((candidate) =>
+        this.connectionMatchesTrace(candidate, traceNames),
+      ) ?? null;
+    this.connectionByTraceId.set(trace.pcb_trace_id, connection);
+    return connection ?? undefined;
   }
 
   private connectionMatchesTrace(

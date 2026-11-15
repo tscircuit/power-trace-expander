@@ -168,6 +168,10 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   budgetLimited = false;
 
   private readonly connectionNameResolver: ConnectionNameResolver;
+  private readonly connectionByTraceId = new Map<
+    string,
+    SimpleRouteConnection | null
+  >();
   private readonly traceIndices: number[];
   private readonly maxRerouteLength: number;
   private readonly clearancePaddingTiers: number[];
@@ -2110,16 +2114,21 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   }
 
   private findConnectionForTrace(trace: SimplifiedPcbTrace) {
+    const cached = this.connectionByTraceId.get(trace.pcb_trace_id);
+    if (cached !== undefined) return cached ?? undefined;
     const traceNames = new Set(
       this.connectionNameResolver.canonicalize(
         this.getTraceConnectionNames(trace),
       ),
     );
-    return this.inputProblem.simpleRouteJson.connections.find((connection) =>
-      this.connectionNameResolver
-        .canonicalize(this.getConnectionNames(connection))
-        .some((name) => traceNames.has(name)),
-    );
+    const connection =
+      this.inputProblem.simpleRouteJson.connections.find((connection) =>
+        this.connectionNameResolver
+          .canonicalize(this.getConnectionNames(connection))
+          .some((name) => traceNames.has(name)),
+      ) ?? null;
+    this.connectionByTraceId.set(trace.pcb_trace_id, connection);
+    return connection ?? undefined;
   }
 
   private getConnectionNames(connection: SimpleRouteConnection) {
