@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { measureTraceWidths } from "../src/measureTraceWidths";
 import { SpatialObstacleIndex } from "../src/SpatialObstacleIndex";
 import type { SimpleRouteJson, SimplifiedPcbTrace } from "../src/types";
 
@@ -67,4 +68,77 @@ test("via copper spacing respects pad rules independently of drill and trace rul
       }),
     ).toBe(false);
   }
+});
+
+test("pad and via obstacle classification and trace width measurement support non-zero-index connectedTo and connectsTo aliases", (): void => {
+  const input: SimpleRouteJson = {
+    layerCount: 2,
+    minTraceWidth: 0.1,
+    minTraceToPadEdgeClearance: 0.1,
+    minPadEdgeToPadEdgeClearance: 0.2,
+    bounds: { minX: -5, maxX: 5, minY: -5, maxY: 5 },
+    connections: [
+      {
+        name: "POWER",
+        nominalTraceWidth: 0.5,
+        pointsToConnect: [
+          { x: 0, y: 0, layer: "top", pcb_port_id: "pcb_port_power_start" },
+          { x: 2, y: 0, layer: "top", pcb_port_id: "pcb_port_power_end" },
+        ],
+      },
+    ],
+    obstacles: [
+      {
+        type: "rect",
+        center: { x: 0, y: 0 },
+        width: 0.4,
+        height: 0.4,
+        layers: ["top"],
+        connectedTo: ["signal_net", "pcb_via_1"],
+      },
+      {
+        type: "rect",
+        center: { x: 2, y: 0 },
+        width: 0.4,
+        height: 0.4,
+        layers: ["top"],
+        connectedTo: ["signal_net", "pcb_smtpad_1"],
+      },
+    ],
+  };
+
+  const index = new SpatialObstacleIndex(input, []);
+  expect(
+    index.collidesVia({
+      point: { x: 0.55, y: 0 },
+      layers: ["top"],
+      padDiameter: 0.4,
+      holeDiameter: 0.2,
+      connectionNames: ["POWER"],
+    }),
+  ).toBe(true);
+  expect(
+    index.collides({
+      start: { x: 2, y: 0.5 },
+      end: { x: 2, y: 0.5 },
+      layer: "top",
+      width: 0.2,
+      connectionNames: ["POWER"],
+      obstacleClearance: 0.25,
+    }),
+  ).toBe(true);
+
+  const metrics = measureTraceWidths(input, [
+    {
+      type: "pcb_trace",
+      pcb_trace_id: "power_trace_1",
+      connectsTo: ["pcb_port_power_start", "pcb_port_power_end"],
+      route: [
+        { route_type: "wire", x: 0, y: 0, width: 0.5, layer: "top" },
+        { route_type: "wire", x: 2, y: 0, width: 0.5, layer: "top" },
+      ],
+    },
+  ]);
+  expect(metrics.get(0.5)?.totalLength).toBeCloseTo(2, 6);
+  expect(metrics.get(0.5)?.nominalCoverage).toBeCloseTo(1, 6);
 });
