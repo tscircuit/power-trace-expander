@@ -87,119 +87,91 @@ export const calculateOctilinearPaths = (start: Point, end: Point) => {
   );
 };
 
-function getSpineEntries(
+function getDetourCorners(
   {
-    anchor,
-    spineCross,
-    alongSign,
-  }: {
-    anchor: Point;
-    spineCross: number;
-    alongSign: number;
-  },
-  traceWidth: number,
+    start,
+    laneX,
+    direction,
+  }: { start: Point; laneX: number; direction: number },
+  width: number,
 ): [Point, Point][] {
-  const crossDistance = spineCross - anchor.x;
-  const entries = [0.25, 0.5, 0.75, 1].map(
-    (diagonalFraction): [Point, Point] => {
-      const diagonal = crossDistance * diagonalFraction;
-      return [
-        { x: spineCross - diagonal, y: anchor.y },
-        { x: spineCross, y: anchor.y + Math.abs(diagonal) * alongSign },
-      ];
-    },
-  );
-  for (const leadLength of [traceWidth / 4, traceWidth / 2, traceWidth]) {
-    entries.push([
-      { x: anchor.x, y: anchor.y + leadLength * alongSign },
-      {
-        x: spineCross,
-        y: anchor.y + (leadLength + Math.abs(crossDistance)) * alongSign,
-      },
-    ]);
-  }
-  return entries;
+  const dx = laneX - start.x;
+  const corners = [1, 0.5, 0.25].map((fraction): [Point, Point] => [
+    { x: laneX - dx * fraction, y: start.y },
+    { x: laneX, y: start.y + Math.abs(dx * fraction) * direction },
+  ]);
+  const lead = width / 4;
+  corners.push([
+    { x: start.x, y: start.y + lead * direction },
+    { x: laneX, y: start.y + (lead + Math.abs(dx)) * direction },
+  ]);
+  return corners;
 }
 
-function swapPointAxes(point: Point): Point {
-  return { x: point.y, y: point.x };
+function swapAxes({ x, y }: Point): Point {
+  return { x: y, y: x };
 }
 
-export function hasShortAxisDetour(
+/** Replace a small lateral excursion with a straight run on the same side. */
+export function* getShortDetourReplacements(
   points: Point[],
-  maxOffset: number,
-): boolean {
-  return points.slice(1, -1).some((point, index) => {
-    const start = points[index]!;
-    const end = points[index + 2]!;
-    if (isOctilinearSegment(start, point) && isOctilinearSegment(point, end))
-      return false;
-
-    for (const axis of ["x", "y"] as const) {
-      const offset = Math.abs(point[axis] - start[axis]);
-      if (
-        Math.abs(start[axis] - end[axis]) <= WIDTH_EPSILON &&
-        offset > WIDTH_EPSILON &&
-        offset <= maxOffset
-      )
-        return true;
-    }
-    return false;
-  });
-}
-
-/** Try one straight run around the existing detour with 45-degree transitions. */
-export function calculateOctilinearSpinePaths(
-  points: Point[],
-  traceWidth: number,
-): Point[][] {
+  width: number,
+): Generator<Point[]> {
   const first = points[0]!;
   const last = points.at(-1)!;
-  const swapAxes = Math.abs(last.x - first.x) > Math.abs(last.y - first.y);
-  let oriented = points;
-  if (swapAxes) oriented = points.map(swapPointAxes);
-  const start = oriented[0]!;
-  const end = oriented.at(-1)!;
-  const alongSign = Math.sign(end.y - start.y);
-  const paths: Point[][] = [];
+  const horizontal = Math.abs(last.x - first.x) > Math.abs(last.y - first.y);
+  let route = points;
+  if (horizontal) route = points.map(swapAxes);
+  const start = route[0]!;
+  const end = route.at(-1)!;
+  const direction = Math.sign(end.y - start.y);
+  if (direction === 0) return;
 
-  for (const side of [-1, 1]) {
-    const outerCross =
-      side * Math.max(...oriented.map((point) => side * point.x));
-    for (const offset of [0, traceWidth / 4, traceWidth / 2]) {
-      const spineCross = outerCross + side * offset;
-      const startEntries = getSpineEntries(
-        { anchor: start, spineCross, alongSign },
-        traceWidth,
+  const sides = new Set<number>();
+  for (let index = 1; index < route.length - 1; index++) {
+    const before = route[index - 1]!;
+    const bend = route[index]!;
+    const after = route[index + 1]!;
+    const offset = bend.x - before.x;
+    if (
+      Math.abs(before.x - after.x) <= WIDTH_EPSILON &&
+      Math.abs(offset) > WIDTH_EPSILON &&
+      Math.abs(offset) <= width &&
+      (bend.y - before.y) * (after.y - bend.y) > 0 &&
+      (!isOctilinearSegment(before, bend) || !isOctilinearSegment(bend, after))
+    ) {
+      sides.add(Math.sign(offset));
+    }
+  }
+
+  for (const side of sides) {
+    const edge = route.reduce(
+      (outer, point) => Math.max(outer, point.x * side),
+      -Infinity,
+    );
+    for (const offset of [0, width / 4, width / 2]) {
+      const laneX = (edge + offset) * side;
+      const fromStart = getDetourCorners({ start, laneX, direction }, width);
+      const fromEnd = getDetourCorners(
+        { start: end, laneX, direction: -direction },
+        width,
       );
-      const endEntries = getSpineEntries(
-        { anchor: end, spineCross, alongSign: -alongSign },
-        traceWidth,
-      );
-      for (const [firstCorner, firstSpinePoint] of startEntries) {
-        for (const [lastCorner, lastSpinePoint] of endEntries) {
-          if (
-            (lastSpinePoint.y - firstSpinePoint.y) * alongSign <=
-            WIDTH_EPSILON
-          )
-            continue;
-          paths.push(
-            removeDuplicatePoints([
-              start,
-              firstCorner,
-              firstSpinePoint,
-              lastSpinePoint,
-              lastCorner,
-              end,
-            ]),
-          );
+      for (const [first, entry] of fromStart) {
+        for (const [last, exit] of fromEnd) {
+          if ((exit.y - entry.y) * direction <= WIDTH_EPSILON) continue;
+
+          let path = removeDuplicatePoints([
+            start,
+            first,
+            entry,
+            exit,
+            last,
+            end,
+          ]);
+          if (horizontal) path = path.map(swapAxes);
+          yield path;
         }
       }
     }
   }
-  paths.sort(
-    (a, b) => a.length - b.length || getPathLength(a) - getPathLength(b),
-  );
-  if (swapAxes) return paths.map((path) => path.map(swapPointAxes));
-  return paths;
 }

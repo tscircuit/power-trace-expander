@@ -6,10 +6,9 @@ import { LocalTraceInflationSolver } from "./LocalTraceInflationSolver";
 import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
 import {
   calculateOctilinearPaths,
-  calculateOctilinearSpinePaths,
   countNonOctilinearSegments,
   getPathLength,
-  hasShortAxisDetour,
+  getShortDetourReplacements,
 } from "./octilinear";
 import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
@@ -37,7 +36,7 @@ type CleanupPhase =
 type CleanupKind = "via-pair" | "pad-clearance" | "simplification";
 
 const WIDE_TRACE_CLEANUP_MIN_WIDTH = 0.5;
-const MAX_OCTILINEAR_SPINE_LENGTH_RATIO = 1.02;
+const MAX_DETOUR_REPLACEMENT_LENGTH_RATIO = 1.02;
 
 type RouteQuality = {
   length: number;
@@ -189,6 +188,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private readonly mutableTraceIndexSet: Set<number>;
   private readonly viaRepairTraceIndices: number[];
   private readonly traceIndices: number[];
+  private readonly simplificationTraceIndices: number[];
   private readonly maxRerouteLength: number;
   private readonly clearancePaddingTiers: number[];
   private readonly desiredPadClearance?: number;
@@ -268,16 +268,23 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       requestedIndices,
     );
     this.mutableTraceIndexSet = new Set(this.mutableTraceIndices);
-    this.traceIndices = requestedIndices.filter((traceIndex) => {
-      const nominalWidth = this.resolveNominalTraceWidth(
-        this.traces[traceIndex]!,
-      );
-      return (
-        nominalWidth >= WIDE_TRACE_CLEANUP_MIN_WIDTH - WIDTH_EPSILON ||
-        nominalWidth >
-          inputProblem.simpleRouteJson.minTraceWidth + WIDTH_EPSILON
-      );
-    });
+    this.traceIndices = [];
+    const narrowTraceIndices: number[] = [];
+    for (const traceIndex of requestedIndices) {
+      const width = this.resolveNominalTraceWidth(this.traces[traceIndex]!);
+      if (width >= WIDE_TRACE_CLEANUP_MIN_WIDTH - WIDTH_EPSILON) {
+        this.traceIndices.push(traceIndex);
+      } else if (
+        width >
+        inputProblem.simpleRouteJson.minTraceWidth + WIDTH_EPSILON
+      ) {
+        narrowTraceIndices.push(traceIndex);
+      }
+    }
+    this.simplificationTraceIndices = [
+      ...this.traceIndices,
+      ...narrowTraceIndices,
+    ];
     for (const traceIndex of this.traceIndices) {
       this.initialTraceLengths.set(
         traceIndex,
@@ -823,13 +830,6 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       return;
     }
     const trace = this.traces[traceIndex]!;
-    if (
-      this.resolveNominalTraceWidth(trace) <
-      WIDE_TRACE_CLEANUP_MIN_WIDTH - WIDTH_EPSILON
-    ) {
-      this.advanceTrace();
-      return;
-    }
     const firstViaIndex = trace.route.findIndex(
       (point, index) => index >= this.routeCursor && point.route_type === "via",
     );
@@ -955,10 +955,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       return;
     }
     const trace = this.traces[traceIndex]!;
-    if (
-      this.resolveNominalTraceWidth(trace) <
-      WIDE_TRACE_CLEANUP_MIN_WIDTH - WIDTH_EPSILON
-    ) {
+    if (this.resolveNominalTraceWidth(trace) < 0.5 - WIDTH_EPSILON) {
       this.advanceTrace();
       return;
     }
@@ -1090,7 +1087,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   }
 
   private scanNextSimplification() {
-    const traceIndex = this.traceIndices[this.traceCursor];
+    const traceIndex = this.simplificationTraceIndices[this.traceCursor];
     if (traceIndex === undefined) {
       this.remainingPadClearanceViolationCount =
         this.countPadClearanceViolations();
@@ -1099,13 +1096,14 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       this.phase = "complete";
       return;
     }
-    const trace = this.traces[traceIndex]!;
-    const nominalWidth = this.resolveNominalTraceWidth(trace);
-    if (nominalWidth < WIDE_TRACE_CLEANUP_MIN_WIDTH - WIDTH_EPSILON) {
-      this.simplifyFullWidthTrace({ traceIndex, trace, nominalWidth });
-      this.advanceTrace();
+    if (this.traceCursor >= this.traceIndices.length) {
+      // The full obstacle index stays valid until a replacement commits.
+      this.simplifyNarrowTrace(traceIndex);
+      this.traceCursor++;
+      this.routeCursor = 0;
       return;
     }
+    const trace = this.traces[traceIndex]!;
     const startIndex = this.routeCursor;
     const start = trace.route[startIndex];
     if (!isWire(start) || startIndex >= trace.route.length - 1) {
@@ -1156,20 +1154,14 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     this.beginCandidates(candidates, "scan-simplification");
   }
 
-  private simplifyFullWidthTrace({
-    traceIndex,
-    trace,
-    nominalWidth,
-  }: {
-    traceIndex: number;
-    trace: SimplifiedPcbTrace;
-    nominalWidth: number;
-  }): void {
-    const points = trace.route.filter(isWire);
+  private simplifyNarrowTrace(traceIndex: number): void {
+    const trace = this.traces[traceIndex]!;
+    const nominalWidth = this.resolveNominalTraceWidth(trace);
+    const points = trace.route;
+    if (!points.every(isWire)) return;
     const start = points[0];
     if (
       !start ||
-      points.length !== trace.route.length ||
       points.some(
         (point) =>
           point.layer !== start.layer ||
@@ -1178,15 +1170,15 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     )
       return;
 
-    if (!hasShortAxisDetour(points, nominalWidth)) return;
     const endIndex = points.length - 1;
     const originalQuality = this.measureRouteRange(trace, 0, endIndex);
+    if (originalQuality.nonOctilinearSegmentCount === 0) return;
     const maxLength = Math.min(
       this.maxRerouteLength,
-      originalQuality.length * MAX_OCTILINEAR_SPINE_LENGTH_RATIO,
+      originalQuality.length * MAX_DETOUR_REPLACEMENT_LENGTH_RATIO,
     );
     const padClearance = this.getBaseObstacleClearance();
-    for (const path of calculateOctilinearSpinePaths(points, nominalWidth)) {
+    for (const path of getShortDetourReplacements(points, nominalWidth)) {
       if (
         path.length > originalQuality.pointCount ||
         getPathLength(path) > maxLength
@@ -2036,8 +2028,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
 
   private getPadClearanceForTrace(trace: SimplifiedPcbTrace) {
     const baseClearance = this.getBaseObstacleClearance();
-    return this.resolveNominalTraceWidth(trace) >=
-      WIDE_TRACE_CLEANUP_MIN_WIDTH - WIDTH_EPSILON
+    return this.resolveNominalTraceWidth(trace) >= 0.5 - WIDTH_EPSILON
       ? Math.max(
           baseClearance,
           this.desiredPadClearance ?? this.resolveNominalTraceWidth(trace) / 2,
@@ -2209,11 +2200,6 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     for (const traceIndex of this.traceIndices) {
       const trace = this.traces[traceIndex];
       if (!trace) continue;
-      if (
-        this.resolveNominalTraceWidth(trace) <
-        WIDE_TRACE_CLEANUP_MIN_WIDTH - WIDTH_EPSILON
-      )
-        continue;
       const connectionNames = this.getTraceConnectionNames(trace);
       for (
         let routeIndex = 0;
@@ -2370,12 +2356,20 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     );
   }
 
+  private getActiveTraceIndices(): number[] {
+    if (this.phase === "repair-vias") return this.viaRepairTraceIndices;
+    if (
+      this.phase === "scan-simplification" ||
+      this.resumePhase === "scan-simplification" ||
+      this.phase === "complete"
+    )
+      return this.simplificationTraceIndices;
+    return this.traceIndices;
+  }
+
   private createStats() {
     const candidate = this.candidates[this.candidateCursor];
-    const activeTraceIndices =
-      this.phase === "repair-vias"
-        ? this.viaRepairTraceIndices
-        : this.traceIndices;
+    const activeTraceIndices = this.getActiveTraceIndices();
     return {
       phase: this.phase,
       budgetLimited: this.budgetLimited,
@@ -2447,10 +2441,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
 
   computeProgress() {
     if (this.solved || this.phase === "complete") return 1;
-    const activeTraceIndices =
-      this.phase === "repair-vias"
-        ? this.viaRepairTraceIndices
-        : this.traceIndices;
+    const activeTraceIndices = this.getActiveTraceIndices();
     if (activeTraceIndices.length === 0) return 1;
     const phaseOffset = this.resumePhase === "scan-via-pairs" ? 0 : 0.5;
     return Math.min(
