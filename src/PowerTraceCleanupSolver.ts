@@ -8,6 +8,7 @@ import {
   calculateOctilinearPaths,
   countNonOctilinearSegments,
   getPathLength,
+  getShortDetourReplacements,
 } from "./octilinear";
 import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
@@ -33,6 +34,9 @@ type CleanupPhase =
   | "complete";
 
 type CleanupKind = "via-pair" | "pad-clearance" | "simplification";
+
+const WIDE_TRACE_CLEANUP_MIN_WIDTH = 0.5;
+const MAX_DETOUR_REPLACEMENT_LENGTH_RATIO = 1.02;
 
 type RouteQuality = {
   length: number;
@@ -184,6 +188,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private readonly mutableTraceIndexSet: Set<number>;
   private readonly viaRepairTraceIndices: number[];
   private readonly traceIndices: number[];
+  private readonly simplificationTraceIndices: number[];
   private readonly maxRerouteLength: number;
   private readonly clearancePaddingTiers: number[];
   private readonly desiredPadClearance?: number;
@@ -263,13 +268,23 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       requestedIndices,
     );
     this.mutableTraceIndexSet = new Set(this.mutableTraceIndices);
-    // Via relocation is a DFM repair and applies to every requested trace.
-    // The later path cleanup remains limited to wide/power connections.
-    this.traceIndices = requestedIndices.filter(
-      (traceIndex) =>
-        this.resolveNominalTraceWidth(this.traces[traceIndex]!) >=
-        0.5 - WIDTH_EPSILON,
-    );
+    this.traceIndices = [];
+    const narrowTraceIndices: number[] = [];
+    for (const traceIndex of requestedIndices) {
+      const width = this.resolveNominalTraceWidth(this.traces[traceIndex]!);
+      if (width >= WIDE_TRACE_CLEANUP_MIN_WIDTH - WIDTH_EPSILON) {
+        this.traceIndices.push(traceIndex);
+      } else if (
+        width >
+        inputProblem.simpleRouteJson.minTraceWidth + WIDTH_EPSILON
+      ) {
+        narrowTraceIndices.push(traceIndex);
+      }
+    }
+    this.simplificationTraceIndices = [
+      ...this.traceIndices,
+      ...narrowTraceIndices,
+    ];
     for (const traceIndex of this.traceIndices) {
       this.initialTraceLengths.set(
         traceIndex,
@@ -1072,13 +1087,20 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   }
 
   private scanNextSimplification() {
-    const traceIndex = this.traceIndices[this.traceCursor];
+    const traceIndex = this.simplificationTraceIndices[this.traceCursor];
     if (traceIndex === undefined) {
       this.remainingPadClearanceViolationCount =
         this.countPadClearanceViolations();
       this.remainingPadClearanceViolationCountByClearance =
         this.countPadClearanceViolationsByTier();
       this.phase = "complete";
+      return;
+    }
+    if (this.traceCursor >= this.traceIndices.length) {
+      // The full obstacle index stays valid until a replacement commits.
+      this.simplifyNarrowTrace(traceIndex);
+      this.traceCursor++;
+      this.routeCursor = 0;
       return;
     }
     const trace = this.traces[traceIndex]!;
@@ -1130,6 +1152,54 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       return;
     }
     this.beginCandidates(candidates, "scan-simplification");
+  }
+
+  private simplifyNarrowTrace(traceIndex: number): void {
+    const trace = this.traces[traceIndex]!;
+    const nominalWidth = this.resolveNominalTraceWidth(trace);
+    const points = trace.route;
+    if (!points.every(isWire)) return;
+    const start = points[0];
+    if (
+      !start ||
+      points.some(
+        (point) =>
+          point.layer !== start.layer ||
+          Math.abs(point.width - nominalWidth) > WIDTH_EPSILON,
+      )
+    )
+      return;
+
+    const endIndex = points.length - 1;
+    const originalQuality = this.measureRouteRange(trace, 0, endIndex);
+    if (originalQuality.nonOctilinearSegmentCount === 0) return;
+    const maxLength = Math.min(
+      this.maxRerouteLength,
+      originalQuality.length * MAX_DETOUR_REPLACEMENT_LENGTH_RATIO,
+    );
+    const padClearance = this.getBaseObstacleClearance();
+    for (const path of getShortDetourReplacements(points, nominalWidth)) {
+      if (
+        path.length > originalQuality.pointCount ||
+        getPathLength(path) > maxLength
+      )
+        continue;
+      const candidate: CleanupCandidate = {
+        kind: "simplification",
+        traceIndex,
+        startIndex: 0,
+        endIndex,
+        layer: start.layer,
+        points: path,
+        width: nominalWidth,
+        padClearance,
+        originalQuality,
+      };
+      if (this.candidateCollides(candidate, 0)) continue;
+      this.beginCandidates([candidate], "scan-simplification");
+      this.applyCandidate(candidate, 0);
+      return;
+    }
   }
 
   private createCandidates({
@@ -2286,12 +2356,20 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     );
   }
 
+  private getActiveTraceIndices(): number[] {
+    if (this.phase === "repair-vias") return this.viaRepairTraceIndices;
+    if (
+      this.phase === "scan-simplification" ||
+      this.resumePhase === "scan-simplification" ||
+      this.phase === "complete"
+    )
+      return this.simplificationTraceIndices;
+    return this.traceIndices;
+  }
+
   private createStats() {
     const candidate = this.candidates[this.candidateCursor];
-    const activeTraceIndices =
-      this.phase === "repair-vias"
-        ? this.viaRepairTraceIndices
-        : this.traceIndices;
+    const activeTraceIndices = this.getActiveTraceIndices();
     return {
       phase: this.phase,
       budgetLimited: this.budgetLimited,
@@ -2363,10 +2441,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
 
   computeProgress() {
     if (this.solved || this.phase === "complete") return 1;
-    const activeTraceIndices =
-      this.phase === "repair-vias"
-        ? this.viaRepairTraceIndices
-        : this.traceIndices;
+    const activeTraceIndices = this.getActiveTraceIndices();
     if (activeTraceIndices.length === 0) return 1;
     const phaseOffset = this.resumePhase === "scan-via-pairs" ? 0 : 0.5;
     return Math.min(

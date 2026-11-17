@@ -86,3 +86,92 @@ export const calculateOctilinearPaths = (start: Point, end: Point) => {
     (a, b) => getPathLength(a) - getPathLength(b) || a.length - b.length,
   );
 };
+
+function getDetourCorners(
+  {
+    start,
+    laneX,
+    direction,
+  }: { start: Point; laneX: number; direction: number },
+  width: number,
+): [Point, Point][] {
+  const dx = laneX - start.x;
+  const corners = [1, 0.5, 0.25].map((fraction): [Point, Point] => [
+    { x: laneX - dx * fraction, y: start.y },
+    { x: laneX, y: start.y + Math.abs(dx * fraction) * direction },
+  ]);
+  const lead = width / 4;
+  corners.push([
+    { x: start.x, y: start.y + lead * direction },
+    { x: laneX, y: start.y + (lead + Math.abs(dx)) * direction },
+  ]);
+  return corners;
+}
+
+function swapAxes({ x, y }: Point): Point {
+  return { x: y, y: x };
+}
+
+/** Replace a small lateral excursion with a straight run on the same side. */
+export function* getShortDetourReplacements(
+  points: Point[],
+  width: number,
+): Generator<Point[]> {
+  const first = points[0]!;
+  const last = points.at(-1)!;
+  const horizontal = Math.abs(last.x - first.x) > Math.abs(last.y - first.y);
+  let route = points;
+  if (horizontal) route = points.map(swapAxes);
+  const start = route[0]!;
+  const end = route.at(-1)!;
+  const direction = Math.sign(end.y - start.y);
+  if (direction === 0) return;
+
+  const sides = new Set<number>();
+  for (let index = 1; index < route.length - 1; index++) {
+    const before = route[index - 1]!;
+    const bend = route[index]!;
+    const after = route[index + 1]!;
+    const offset = bend.x - before.x;
+    if (
+      Math.abs(before.x - after.x) <= WIDTH_EPSILON &&
+      Math.abs(offset) > WIDTH_EPSILON &&
+      Math.abs(offset) <= width &&
+      (bend.y - before.y) * (after.y - bend.y) > 0 &&
+      (!isOctilinearSegment(before, bend) || !isOctilinearSegment(bend, after))
+    ) {
+      sides.add(Math.sign(offset));
+    }
+  }
+
+  for (const side of sides) {
+    const edge = route.reduce(
+      (outer, point) => Math.max(outer, point.x * side),
+      -Infinity,
+    );
+    for (const offset of [0, width / 4, width / 2]) {
+      const laneX = (edge + offset) * side;
+      const fromStart = getDetourCorners({ start, laneX, direction }, width);
+      const fromEnd = getDetourCorners(
+        { start: end, laneX, direction: -direction },
+        width,
+      );
+      for (const [first, entry] of fromStart) {
+        for (const [last, exit] of fromEnd) {
+          if ((exit.y - entry.y) * direction <= WIDTH_EPSILON) continue;
+
+          let path = removeDuplicatePoints([
+            start,
+            first,
+            entry,
+            exit,
+            last,
+            end,
+          ]);
+          if (horizontal) path = path.map(swapAxes);
+          yield path;
+        }
+      }
+    }
+  }
+}
