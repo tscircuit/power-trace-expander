@@ -7,6 +7,7 @@ import {
   distancePointToSegment,
   distanceSegmentToPolygon,
   distanceSegmentToSegment,
+  getDirectionIndependentTraceClearanceSegments,
   segmentIntersectsRect,
   segmentsWithinDistance,
   segmentWithinPolygonDistance,
@@ -76,6 +77,7 @@ export class SpatialObstacleIndex {
       simpleRouteJson,
       traces,
     ),
+    private readonly useDirectionIndependentTraceClearances = false,
   ) {
     this.bounds = simpleRouteJson.bounds;
     if (simpleRouteJson.boardOutline) {
@@ -184,6 +186,10 @@ export class SpatialObstacleIndex {
       const indexedTraceIndex = fixed ? undefined : traceIndex;
       const copperObjectId = `${fixed ? "fixed-trace" : "trace"}:${traceIndex}`;
       const isDynamicTrace = !fixed && traceIndex === this.dynamicTraceIndex;
+      const clearanceSegments =
+        !isDynamicTrace && this.useDirectionIndependentTraceClearances
+          ? getDirectionIndependentTraceClearanceSegments(trace)
+          : undefined;
       const connectionNames = [
         trace.connection_name,
         trace.source_trace_id,
@@ -219,7 +225,6 @@ export class SpatialObstacleIndex {
               radius: diameter / 2,
             },
           });
-          continue;
         }
 
         // Dynamic wire copper is replaced in place and must not block its own
@@ -228,22 +233,26 @@ export class SpatialObstacleIndex {
         if (isDynamicTrace) continue;
 
         const next = trace.route[routeIndex + 1];
-        if (
-          point.route_type !== "wire" ||
-          next?.route_type !== "wire" ||
-          point.layer !== next.layer
-        ) {
-          continue;
-        }
+        const segment = clearanceSegments
+          ? clearanceSegments[routeIndex]
+          : point.route_type === "wire" &&
+              next?.route_type === "wire" &&
+              point.layer === next.layer
+            ? {
+                start: point,
+                end: next,
+                layer: point.layer,
+                width: point.width,
+              }
+            : undefined;
+        if (!segment) continue;
         items.push(
           ...createSegmentIndexItems({
-            start: point,
-            end: next,
-            // Circuit JSON and @tscircuit/checks assign each wire segment the
-            // width of its first route point.
-            width: point.width,
+            start: segment.start,
+            end: segment.end,
+            width: segment.width,
             base: {
-              layers: [point.layer],
+              layers: [segment.layer],
               kind: "trace",
               connectionNames,
               copperObjectId,

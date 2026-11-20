@@ -1,10 +1,85 @@
 import Flatbush from "flatbush";
-import type { IndexedObstacle, Obstacle, Point, WireRoutePoint } from "./types";
+import type {
+  IndexedObstacle,
+  Obstacle,
+  Point,
+  SimplifiedPcbTrace,
+  WireRoutePoint,
+} from "./types";
 
 export const WIDTH_EPSILON = 1e-6;
 
 export const distance = (a: Point, b: Point) =>
   Math.hypot(b.x - a.x, b.y - a.y);
+
+type TraceClearanceSegment = {
+  start: Point;
+  end: Point;
+  layer: string;
+  width: number;
+};
+
+export function getDirectionIndependentTraceClearanceSegments(
+  trace: SimplifiedPcbTrace,
+): Array<TraceClearanceSegment | undefined> {
+  const { route } = trace;
+  const widths = route.map((point) =>
+    point.route_type === "wire"
+      ? Math.max(point.width, point.start_width ?? 0, point.end_width ?? 0)
+      : 0,
+  );
+  const reversedWidths = [...widths];
+  if (trace.route_thickness_mode !== "interpolated") {
+    for (let endIndex = route.length - 1; endIndex >= 0; ) {
+      const end = route[endIndex]!;
+      if (end.route_type !== "wire") {
+        endIndex--;
+        continue;
+      }
+      // Core moves outgoing segment widths when reversing a constant-width
+      // run. The last reversed point retains the original run-end width.
+      let startIndex = endIndex;
+      for (
+        let previous = route[startIndex - 1];
+        previous?.route_type === "wire" && previous.layer === end.layer;
+        previous = route[startIndex - 1]
+      ) {
+        reversedWidths[startIndex] = widths[startIndex - 1]!;
+        startIndex--;
+      }
+      reversedWidths[startIndex] = widths[endIndex]!;
+      endIndex = startIndex - 1;
+    }
+  }
+
+  return route.slice(0, -1).map((start, index) => {
+    const end = route[index + 1]!;
+    if (
+      (start.route_type !== "wire" && start.route_type !== "via") ||
+      (end.route_type !== "wire" && end.route_type !== "via") ||
+      (start.route_type === "wire" &&
+        end.route_type === "wire" &&
+        start.layer !== end.layer)
+    ) {
+      return undefined;
+    }
+    const wire = start.route_type === "wire" ? start : end;
+    if (wire.route_type !== "wire") return undefined;
+    // Native clearance uses the larger wire endpoint in whichever direction
+    // Core serializes the route, including leads between a wire and a via.
+    return {
+      start,
+      end,
+      layer: wire.layer,
+      width: Math.max(
+        widths[index]!,
+        widths[index + 1]!,
+        reversedWidths[index]!,
+        reversedWidths[index + 1]!,
+      ),
+    };
+  });
+}
 
 export const distancePointToSegment = (
   point: Point,
