@@ -857,15 +857,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     for (let traceIndex = 0; traceIndex < this.traces.length; traceIndex++) {
       if (traceIndex === this.traceIndex) continue;
       const trace = this.traces[traceIndex]!;
-      const connection = this.findConnectionForTrace(trace);
-      if (!connection) continue;
-      const width = Math.max(
-        connection.nominalTraceWidth ??
-          connection.width ??
-          this.inputProblem.nominalTraceWidth ??
-          this.inputProblem.minTraceWidth,
-        this.inputProblem.minTraceWidth,
-      );
+      if (!this.findConnectionForTrace(trace)) continue;
+      const width = this.resolveNominalTraceWidth(trace);
       if (width < targetWidth - WIDTH_EPSILON) indices.push(traceIndex);
     }
     return indices;
@@ -1773,7 +1766,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         const connection = this.findConnectionForTrace(blockingTrace);
         if (
           !connection ||
-          (connection.nominalTraceWidth ??
+          (blockingTrace.nominalTraceWidth ??
+            connection.nominalTraceWidth ??
             connection.width ??
             this.inputProblem.nominalTraceWidth ??
             this.inputProblem.minTraceWidth) >=
@@ -2498,7 +2492,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private resolveNominalTraceWidth(trace: SimplifiedPcbTrace) {
     const connection = this.findConnectionForTrace(trace);
     return Math.max(
-      connection?.nominalTraceWidth ??
+      trace.nominalTraceWidth ??
+        connection?.nominalTraceWidth ??
         connection?.width ??
         this.inputProblem.nominalTraceWidth ??
         this.inputProblem.minTraceWidth,

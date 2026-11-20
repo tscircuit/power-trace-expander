@@ -196,7 +196,7 @@ export class LocalTraceInflationSolver extends BaseSolver {
     // still gives us stable endpoints and a conservative nominal width, so
     // they are safe to shove without inventing connectivity metadata.
     const traceWidth = connection
-      ? this.resolveNominalTraceWidth(connection)
+      ? this.resolveNominalTraceWidth(trace, connection)
       : this.getTraceNominalWidth(trace);
     if (
       traceWidth >=
@@ -496,9 +496,13 @@ export class LocalTraceInflationSolver extends BaseSolver {
     return length;
   }
 
-  private resolveNominalTraceWidth(connection: SimpleRouteConnection) {
+  private resolveNominalTraceWidth(
+    trace: SimplifiedPcbTrace,
+    connection: SimpleRouteConnection,
+  ) {
     return Math.max(
-      connection.nominalTraceWidth ??
+      trace.nominalTraceWidth ??
+        connection.nominalTraceWidth ??
         connection.width ??
         this.inputProblem.simpleRouteJson.nominalTraceWidth ??
         this.inputProblem.simpleRouteJson.minTraceWidth,

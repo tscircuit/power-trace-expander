@@ -2018,7 +2018,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
   private resolveNominalTraceWidth(trace: SimplifiedPcbTrace) {
     const connection = this.findConnectionForTrace(trace);
     return Math.max(
-      connection?.nominalTraceWidth ??
+      trace.nominalTraceWidth ??
+        connection?.nominalTraceWidth ??
         connection?.width ??
         this.inputProblem.simpleRouteJson.nominalTraceWidth ??
         this.inputProblem.simpleRouteJson.minTraceWidth,
