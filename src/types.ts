@@ -122,6 +122,8 @@ export type PowerTraceExpanderInput = SimpleRouteJson;
 export type PowerTraceExpanderOptions = {
   /** Restrict the top-level scan while still allowing nearby traces to move. */
   onlyConnectionNames?: readonly string[];
+  /** Try explicit branch targets in place if the expansion search uses its budget. */
+  finishBranchWidthsInPlace?: boolean;
   /**
    * Allow multilayer reroutes that introduce new vias. Defaults to true.
    * Disable this when expansion must preserve or reduce the input via count.

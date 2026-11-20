@@ -34,6 +34,7 @@ type SolverPhase =
   | "try-trace-inflation"
   | "try-layer-candidate"
   | "try-grid-candidate"
+  | "finish-branch-widths"
   | "cleanup"
   | "repair-trace-clearance"
   | "complete";
@@ -82,6 +83,7 @@ const LAYER_GRID_VARIANTS: Array<{
 const TOTAL_OPERATION_BUDGET = 8_000_000;
 const OPERATIONS_PER_ITERATION = 64;
 const FINALIZATION_ITERATION_RESERVE_FRACTION = 1 / 8;
+const BRANCH_WIDTH_SHARE_OF_FINALIZATION_BUDGET = 1 / 8;
 const CLEANUP_SHARE_OF_FINALIZATION_BUDGET = 3 / 4;
 const MAX_RETAINED_FAILED_SUBSOLVERS = 16;
 
@@ -115,6 +117,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private readonly immutableTraceIndices: number[];
   private readonly initialImmutableTraceSignatures = new Map<number, string>();
   private traceOrderCursor = -1;
+  private branchWidthFinalizationLimit = 0;
   private readonly maxPassCount = 4;
   private previousWidthDeficit = 0;
   passIndex = 0;
@@ -365,6 +368,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       case "try-grid-candidate":
         this.startNextGridCandidate();
         break;
+      case "finish-branch-widths":
+        this.finishNextBranchWidth();
+        break;
       case "cleanup":
         // The active cleanup solver is stepped before the phase switch.
         break;
@@ -522,7 +528,77 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeInflationWidth = null;
     this.layerAttempt = null;
     this.discardInFlightExpansion();
+    // Keep most of the reserve for cleanup and final clearance repair.
+    const branchWidthBudget = this.options.finishBranchWidthsInPlace
+      ? Math.floor(
+          this.getRemainingChildStepBudget() *
+            BRANCH_WIDTH_SHARE_OF_FINALIZATION_BUDGET,
+        )
+      : 0;
+    if (branchWidthBudget > 0) {
+      this.branchWidthFinalizationLimit =
+        this.getOperationCount() + branchWidthBudget;
+      this.traceOrderCursor = -1;
+      this.traceIndex = -1;
+      this.phase = "finish-branch-widths";
+      return;
+    }
     this.startCleanup();
+  }
+
+  private finishNextBranchWidth() {
+    if (this.getOperationCount() > this.branchWidthFinalizationLimit) {
+      this.startCleanup();
+      return;
+    }
+
+    const trace = this.traces[this.traceIndex];
+    const segmentIndex = trace
+      ? this.findNextUnderWidthSegment(
+          trace,
+          this.routeSegmentIndex,
+          this.nominalTraceWidth,
+        )
+      : -1;
+    if (trace && segmentIndex !== -1) {
+      this.routeSegmentIndex = segmentIndex + 1;
+      const start = trace.route[segmentIndex];
+      const end = trace.route[segmentIndex + 1];
+      if (
+        isWire(start) &&
+        isWire(end) &&
+        distance(start, end) > WIDTH_EPSILON &&
+        this.probeInPlaceWidth(
+          trace,
+          segmentIndex,
+          this.getTraceConnectionNames(trace),
+          this.nominalTraceWidth,
+        )
+      ) {
+        start.width = Math.max(start.width, this.nominalTraceWidth);
+        end.width = Math.max(end.width, this.nominalTraceWidth);
+        this.expandedSegmentCount++;
+      }
+      return;
+    }
+
+    const nextTraceIndex = this.traceOrder[++this.traceOrderCursor];
+    if (nextTraceIndex === undefined) {
+      this.startCleanup();
+      return;
+    }
+    const nextTrace = this.traces[nextTraceIndex]!;
+    if (
+      nextTrace.nominalTraceWidth === undefined ||
+      !this.findConnectionForTrace(nextTrace)
+    ) {
+      this.traceIndex = -1;
+      return;
+    }
+    this.nominalTraceWidth = this.resolveNominalTraceWidth(nextTrace);
+    this.traceIndex = nextTraceIndex;
+    this.routeSegmentIndex = 0;
+    this.rebuildObstacleIndex();
   }
 
   private discardInFlightExpansion() {
