@@ -1,3 +1,4 @@
+import Flatbush from "flatbush";
 import type { IndexedObstacle, Obstacle, Point, WireRoutePoint } from "./types";
 
 export const WIDTH_EPSILON = 1e-6;
@@ -76,7 +77,7 @@ export const distanceSegmentToSegment = (
   );
 };
 
-const pointInPolygon = (point: Point, polygon: Point[]) => {
+const pointInPolygon = (point: Point, polygon: ReadonlyArray<Point>) => {
   let inside = false;
   for (
     let index = 0, previousIndex = polygon.length - 1;
@@ -113,6 +114,63 @@ export const distanceSegmentToPolygon = (
     );
   }
   return minimumDistance;
+};
+
+/** Prepare boundary edges so route searches only test nearby segments. */
+export const createBoardOutlineClearanceChecker = (
+  outline: ReadonlyArray<Point>,
+): ((start: Point, end: Point, clearance: number) => boolean) => {
+  if (outline.length < 3) {
+    throw new Error("The board outline must have at least three vertices");
+  }
+  const edges = outline.map((start, index) => ({
+    start,
+    end: outline[(index + 1) % outline.length]!,
+  }));
+  const index = new Flatbush(edges.length);
+  let right = -Infinity;
+  for (const { start, end } of edges) {
+    right = Math.max(right, start.x, end.x);
+    index.add(
+      Math.min(start.x, end.x),
+      Math.min(start.y, end.y),
+      Math.max(start.x, end.x),
+      Math.max(start.y, end.y),
+    );
+  }
+  index.finish();
+
+  return (start, end, clearance): boolean => {
+    if (start.x > right) return false;
+    let inside = false;
+    for (const edgeIndex of index.search(start.x, start.y, right, start.y)) {
+      const { start: a, end: b } = edges[edgeIndex]!;
+      if (
+        a.y > start.y !== b.y > start.y &&
+        start.x < ((b.x - a.x) * (start.y - a.y)) / (b.y - a.y) + a.x
+      ) {
+        inside = !inside;
+      }
+    }
+    // A segment starting inside can only leave through a boundary edge.
+    if (!inside) return false;
+
+    const threshold = Math.max(0, clearance - 1e-9);
+    const envelope = clearance + 1e-9;
+    const candidates = index.search(
+      Math.min(start.x, end.x) - envelope,
+      Math.min(start.y, end.y) - envelope,
+      Math.max(start.x, end.x) + envelope,
+      Math.max(start.y, end.y) + envelope,
+    );
+    for (const edgeIndex of candidates) {
+      const edge = edges[edgeIndex]!;
+      if (segmentsWithinDistance(start, end, edge.start, edge.end, threshold)) {
+        return false;
+      }
+    }
+    return true;
+  };
 };
 
 /** Tests clearance without calculating the full minimum distance. */
