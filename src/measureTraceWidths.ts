@@ -67,10 +67,12 @@ const findConnection = (
 
 const getNominalWidth = (
   problem: SimpleRouteJson,
+  trace: SimplifiedPcbTrace,
   connection: SimpleRouteConnection,
 ) =>
   Math.max(
-    connection.nominalTraceWidth ??
+    trace.nominalTraceWidth ??
+      connection.nominalTraceWidth ??
       connection.width ??
       problem.nominalTraceWidth ??
       problem.minTraceWidth,
@@ -118,7 +120,7 @@ export const measureTraceWidths = (
   for (const trace of traces) {
     const connection = findConnection(problem, trace);
     if (!connection) continue;
-    const nominalWidth = getNominalWidth(problem, connection);
+    const nominalWidth = getNominalWidth(problem, trace, connection);
     const metric = accumulators.get(nominalWidth) ?? {
       traceCount: 0,
       totalLength: 0,

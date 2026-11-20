@@ -404,7 +404,8 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
           .some((name) => traceNames.has(name)),
     );
     const nominalWidth = Math.max(
-      connection?.nominalTraceWidth ??
+      trace.nominalTraceWidth ??
+        connection?.nominalTraceWidth ??
         connection?.width ??
         this.inputProblem.simpleRouteJson.nominalTraceWidth ??
         this.minimumTraceWidth,
