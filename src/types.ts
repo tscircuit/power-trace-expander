@@ -3,6 +3,8 @@ export type WireRoutePoint = {
   x: number;
   y: number;
   width: number;
+  start_width?: number;
+  end_width?: number;
   layer: string;
   start_pcb_port_id?: string;
   end_pcb_port_id?: string;
@@ -28,6 +30,7 @@ export type SimplifiedPcbTrace = {
   connectsTo?: string[];
   /** Requested width of this routed branch, when it differs from the net. */
   nominalTraceWidth?: number;
+  route_thickness_mode?: "constant" | "interpolated";
   route: Array<
     | WireRoutePoint
     | ViaRoutePoint

@@ -4,6 +4,7 @@ import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
   clamp,
   distance,
+  getDirectionIndependentTraceClearanceSegments,
   splitUnderWidthWireSegments,
   WIDTH_EPSILON,
 } from "./geometry";
@@ -567,17 +568,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       if (
         isWire(start) &&
         isWire(end) &&
-        distance(start, end) > WIDTH_EPSILON &&
-        this.probeInPlaceWidth(
-          trace,
-          segmentIndex,
-          this.getTraceConnectionNames(trace),
-          this.nominalTraceWidth,
-        )
+        distance(start, end) > WIDTH_EPSILON
       ) {
-        start.width = Math.max(start.width, this.nominalTraceWidth);
-        end.width = Math.max(end.width, this.nominalTraceWidth);
-        this.expandedSegmentCount++;
+        this.tryFinishBranchSegmentWidth(trace, start, end);
       }
       return;
     }
@@ -590,6 +583,12 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     const nextTrace = this.traces[nextTraceIndex]!;
     if (
       nextTrace.nominalTraceWidth === undefined ||
+      nextTrace.route_thickness_mode === "interpolated" ||
+      nextTrace.route.some(
+        (point) =>
+          isWire(point) &&
+          (point.start_width !== undefined || point.end_width !== undefined),
+      ) ||
       !this.findConnectionForTrace(nextTrace)
     ) {
       this.traceIndex = -1;
@@ -599,6 +598,36 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.traceIndex = nextTraceIndex;
     this.routeSegmentIndex = 0;
     this.rebuildObstacleIndex();
+  }
+
+  private tryFinishBranchSegmentWidth(
+    trace: SimplifiedPcbTrace,
+    start: WireRoutePoint,
+    end: WireRoutePoint,
+  ) {
+    this.inPlaceWidthProbeCount++;
+    const before = getDirectionIndependentTraceClearanceSegments(trace);
+    const previousStartWidth = start.width;
+    const previousEndWidth = end.width;
+    start.width = Math.max(start.width, this.nominalTraceWidth);
+    end.width = Math.max(end.width, this.nominalTraceWidth);
+    const connectionNames = this.getTraceConnectionNames(trace);
+    const blocked = getDirectionIndependentTraceClearanceSegments(trace).some(
+      (segment, index) =>
+        segment &&
+        segment.width > before[index]!.width + WIDTH_EPSILON &&
+        this.obstacleIndex.collides({
+          ...segment,
+          connectionNames,
+          obstacleClearance: this.getDesiredPadClearance(segment.width),
+        }),
+    );
+    if (blocked) {
+      start.width = previousStartWidth;
+      end.width = previousEndWidth;
+    } else {
+      this.expandedSegmentCount++;
+    }
   }
 
   private discardInFlightExpansion() {
@@ -2850,6 +2879,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.traceIndex,
       [],
       this.connectionNameResolver,
+      this.phase === "finish-branch-widths",
     );
   }
 
