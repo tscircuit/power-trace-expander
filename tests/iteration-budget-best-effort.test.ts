@@ -4,9 +4,9 @@ import {
   PowerTraceCleanupSolver,
   PowerTraceExpanderSolver,
   type PowerTraceExpanderInput,
-  type SimplifiedPcbTrace,
 } from "../src";
 import { PhysicalConnectivityInvariant } from "../src/PhysicalConnectivityInvariant";
+import type { SimplifiedPcbTrace } from "../src/types";
 
 test("final acceptance never applies an in-flight candidate", () => {
   const solver = new PowerTraceExpanderSolver(
