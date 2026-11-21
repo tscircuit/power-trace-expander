@@ -1,4 +1,5 @@
 import { BaseSolver } from "@tscircuit/solver-utils";
+import { removeUnusedTraceBacktracks } from "./removeUnusedTraceBacktracks";
 import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
@@ -309,7 +310,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.remainingImmutableViaViolationPairCount =
       this.initialImmutableViaViolationPairCount;
     this.activeSubSolver = null;
-    this.MAX_ITERATIONS = TOTAL_OPERATION_BUDGET / OPERATIONS_PER_ITERATION;
+    const effort = this.options.effort ?? 1;
+    if (!Number.isFinite(effort) || effort <= 0) {
+      throw new Error(
+        "Power trace expansion effort must be positive and finite",
+      );
+    }
+    this.MAX_ITERATIONS = Math.ceil(
+      (TOTAL_OPERATION_BUDGET / OPERATIONS_PER_ITERATION) * effort,
+    );
     this.stats = this.createStats();
   }
 
@@ -372,6 +381,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         // The active clearance repair solver is stepped before the phase switch.
         break;
       case "complete":
+        this.removeUnusedBacktracks();
         this.acceptConnectivityCheckpoint(this.traces, "final");
         this.solved = true;
         break;
@@ -2795,6 +2805,15 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.failedSubSolvers[MAX_RETAINED_FAILED_SUBSOLVERS - 1] = solver;
   }
 
+  private removeUnusedBacktracks(): void {
+    const result = removeUnusedTraceBacktracks(
+      this.inputProblem,
+      this.traces,
+      new Set(this.immutableTraceIndices),
+    );
+    this.traces = result.traces;
+  }
+
   override tryFinalAcceptance() {
     this.finalAcceptanceUsed = true;
     let adoptedFinalizationChild = false;
@@ -2823,6 +2842,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeInflationKey = null;
     this.activeInflationWidth = null;
     this.layerAttempt = null;
+    this.removeUnusedBacktracks();
     this.acceptConnectivityCheckpoint(this.traces, "final");
     this.traceIndex = this.traces.length;
     this.phase = "complete";

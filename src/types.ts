@@ -78,6 +78,8 @@ export type Obstacle = {
   center: Point;
   width: number;
   height: number;
+  /** Physical circular drill diameter, independent of the copper outline. */
+  holeDiameter?: number;
   ccwRotationDegrees?: number;
   connectedTo: string[];
   isCopperPour?: boolean;
@@ -116,6 +118,8 @@ export type CopperRoutePoint = WireRoutePoint | ViaRoutePoint;
 export type PowerTraceExpanderInput = SimpleRouteJson;
 
 export type PowerTraceExpanderOptions = {
+  /** Scale the bounded work allowance. Defaults to 1. */
+  effort?: number;
   /** Restrict the top-level scan while still allowing nearby traces to move. */
   onlyConnectionNames?: readonly string[];
   /**
@@ -156,7 +160,7 @@ export type IndexedObstacle = {
   maxY: number;
   layers: string[];
   kind: "obstacle" | "trace" | "via";
-  obstacleKind?: "pad" | "via" | "hole" | "other";
+  obstacleKind?: "pad" | "via" | "hole" | "pour" | "other";
   connectionNames: string[];
   /** Stable identity for all indexed chunks from one copper object. */
   copperObjectId?: string;

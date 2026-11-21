@@ -14,6 +14,7 @@ export {
   type PowerTraceClearanceRepairProblem,
 } from "./PowerTraceClearanceRepairSolver";
 export { SpatialObstacleIndex } from "./SpatialObstacleIndex";
+export { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
 export { ConnectionNameResolver } from "./ConnectionNameResolver";
 export {
   measureTraceWidths,
