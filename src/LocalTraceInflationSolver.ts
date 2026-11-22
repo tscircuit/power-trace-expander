@@ -89,7 +89,15 @@ export class LocalTraceInflationSolver extends BaseSolver {
     ),
   ) {
     super();
-    this.inputProblem = structuredClone(inputProblem);
+    // Obstacles are read-only here, so share them instead of cloning each one.
+    this.inputProblem = {
+      ...inputProblem,
+      simpleRouteJson: {
+        ...inputProblem.simpleRouteJson,
+        traces: structuredClone(inputProblem.simpleRouteJson.traces),
+      },
+      traces: structuredClone(inputProblem.traces),
+    };
     this.traces = structuredClone(inputProblem.traces);
     this.corridor = structuredClone(inputProblem.corridor);
     this.connectionNameResolver = connectionNameResolver;
