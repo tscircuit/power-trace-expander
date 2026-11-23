@@ -1,0 +1,44 @@
+<svg width="800" height="190" viewBox="0 0 800 190" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><g><polyline data-points="-4,0 -3.2,0 -2.4,0 -1.6,0 -0.7999999999999998,0 0,0 0.7999999999999998,0 1.5999999999999996,0 2.4000000000000004,0 3.2,0 4,0" data-type="line" data-label="" points="40,140.4 72,140.4 104,140.4 136,140.4 168,140.4 200,140.4 232,140.4 264,140.4 296,140.4 328,140.4 360,140.4" fill="none" stroke="#087f5b" stroke-width="32"/></g><g><polyline data-points="6,0 14,0" data-type="line" data-label="" points="440,140.4 760,140.4" fill="none" stroke="#087f5b" stroke-width="6"/></g><text data-type="text" data-label="During search · 0.80 mm" data-x="0" data-y="1" x="200" y="100.4" fill="black" font-size="18.400000000000002" font-family="sans-serif" text-anchor="middle" dominant-baseline="central">During search · 0.80 mm</text><text data-type="text" data-label="Returned route · 0.15 mm" data-x="10" data-y="1" x="600" y="100.4" fill="black" font-size="18.400000000000002" font-family="sans-serif" text-anchor="middle" dominant-baseline="central">Returned route · 0.15 mm</text><text data-type="text" data-label="Clear branch at the search limit" data-x="5" data-y="1.98" x="400" y="61.2" fill="black" font-size="23.2" font-family="sans-serif" text-anchor="middle" dominant-baseline="central">Clear branch at the search limit</text><g id="crosshair" style="display: none"><line id="crosshair-h" y1="0" y2="190" stroke="#666" stroke-width="0.5"/><line id="crosshair-v" x1="0" x2="800" stroke="#666" stroke-width="0.5"/><text id="coordinates" font-family="monospace" font-size="12" fill="#666"></text></g><script><![CDATA[
+              document.currentScript.parentElement.addEventListener('mousemove', (e) => {
+                const svg = e.currentTarget;
+                const rect = svg.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const crosshair = svg.getElementById('crosshair');
+                const h = svg.getElementById('crosshair-h');
+                const v = svg.getElementById('crosshair-v');
+                const coords = svg.getElementById('coordinates');
+                
+                crosshair.style.display = 'block';
+                h.setAttribute('x1', '0');
+                h.setAttribute('x2', '800');
+                h.setAttribute('y1', y);
+                h.setAttribute('y2', y);
+                v.setAttribute('x1', x);
+                v.setAttribute('x2', x);
+                v.setAttribute('y1', '0');
+                v.setAttribute('y2', '190');
+
+                // Calculate real coordinates using inverse transformation
+                const matrix = {"a":40,"c":0,"e":200,"b":0,"d":-40,"f":140.4};
+                // Manually invert and apply the affine transform
+                // Since we only use translate and scale, we can directly compute:
+                // x' = (x - tx) / sx
+                // y' = (y - ty) / sy
+                const sx = matrix.a;
+                const sy = matrix.d;
+                const tx = matrix.e; 
+                const ty = matrix.f;
+                const realPoint = {
+                  x: (x - tx) / sx,
+                  y: (y - ty) / sy // Flip y back since we used negative scale
+                }
+                
+                coords.textContent = `(${realPoint.x.toFixed(2)}, ${realPoint.y.toFixed(2)})`;
+                coords.setAttribute('x', (x + 5).toString());
+                coords.setAttribute('y', (y - 5).toString());
+              });
+              document.currentScript.parentElement.addEventListener('mouseleave', () => {
+                document.currentScript.parentElement.getElementById('crosshair').style.display = 'none';
+              });
+            ]]></script></svg>
