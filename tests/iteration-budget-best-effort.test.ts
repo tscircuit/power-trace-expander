@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import "bun-match-svg";
 import {
+  getBounds,
   getSvgFromGraphicsObject,
   stackGraphicsHorizontally,
 } from "graphics-debug";
@@ -127,14 +128,13 @@ test("optionally widens clear branches in place at the search limit", async () =
     trace("no-branch-target", -2),
     trace("not-selected", -4, 0.8),
   ];
-  const blocker = trace("blocker", 2.3);
   const input: PowerTraceExpanderInput = {
     bounds: { minX: -6, minY: -6, maxX: 6, maxY: 6 },
     layerCount: 2,
     minTraceWidth: 0.15,
     obstacles: [],
     traces,
-    fixedTraces: [blocker],
+    fixedTraces: [trace("blocker", 2.3)],
     connections: traces.map(({ pcb_trace_id, route }) => ({
       name: pcb_trace_id,
       nominalTraceWidth: 0.8,
@@ -157,37 +157,53 @@ test("optionally widens clear branches in place at the search limit", async () =
       cleanupCompleted: true,
       clearanceRepairCompleted: true,
     });
-    return solver;
+    return solver.getOutput();
   };
 
   const disabled = solveAtBudget();
   const enabled = solveAtBudget(true);
-  expect(disabled.getOutput()).toEqual(traces);
-  const output = enabled.getOutput();
-  expect(output).toEqual([trace("clear", 0, 0.8, 0.8), ...traces.slice(1)]);
+  expect(disabled).toEqual(traces);
+  expect(enabled).toEqual([trace("clear", 0, 0.8, 0.8), ...traces.slice(1)]);
   expect(
-    new PhysicalConnectivityInvariant(input, traces).validate(output).safe,
+    new PhysicalConnectivityInvariant(input, traces).validate(enabled).safe,
   ).toBe(true);
 
-  const fixedWire = blocker.route.filter((point) => point.route_type === "wire");
-  const panels = [disabled, enabled].map((solver) => {
-    const graphics = solver.visualize();
+  const runs = [
+    ["Widening off", disabled],
+    ["Widening on", enabled],
+  ] as const;
+  const panels = runs.map(([label, output]) => {
+    const clearBranch = output.find((trace) => trace.pcb_trace_id === "clear")!;
+    const points = clearBranch.route.filter(
+      (point) => point.route_type === "wire",
+    );
+    const [start, end] = points;
     return {
-      ...graphics,
-      lines: [
-        ...graphics.lines!,
-        { points: fixedWire, strokeWidth: fixedWire[0]!.width, strokeColor: "#475569" },
+      coordinateSystem: "cartesian" as const,
+      lines: [{ points, strokeWidth: start.width, strokeColor: "#087f5b" }],
+      texts: [
+        {
+          x: (start.x + end.x) / 2,
+          y: start.y + 1,
+          text: `${label} · ${start.width.toFixed(2)} mm`,
+          fontSize: 0.46,
+        },
       ],
     };
   });
-  const comparison = stackGraphicsHorizontally(panels, {
-    titles: ["Widening disabled", "Widening enabled"],
+  const comparison = stackGraphicsHorizontally(panels);
+  const { minX, maxX, maxY } = getBounds(comparison);
+  comparison.texts!.push({
+    x: (minX + maxX) / 2,
+    y: maxY + 0.75,
+    text: "Clear branch at the search limit",
+    fontSize: 0.58,
   });
   await expect(
     getSvgFromGraphicsObject(comparison, {
       backgroundColor: "white",
-      svgWidth: 940,
-      svgHeight: 430,
+      svgWidth: 800,
+      svgHeight: 190,
     }),
   ).toMatchSvgSnapshot(import.meta.path, "widen-in-place");
 });
