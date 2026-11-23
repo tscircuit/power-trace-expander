@@ -106,7 +106,7 @@ test("reserves budget for cleanup and clearance repair", () => {
   });
 });
 
-test("the search cutoff discards the width of a clear branch", async () => {
+test("the search cutoff discards the clear branch width even when widening is requested", async () => {
   const trace = (
     name: string,
     y: number,
@@ -145,10 +145,12 @@ test("the search cutoff discards the width of a clear branch", async () => {
       ),
     })),
   };
-  const solveAtBudget = () => {
-    const solver = new PowerTraceExpanderSolver(input, {
+  const solveAtBudget = (widenInPlaceAtSearchLimit?: boolean) => {
+    const options = {
       onlyConnectionNames: ["clear", "blocked", "no-branch-target"],
-    });
+      widenInPlaceAtSearchLimit,
+    };
+    const solver = new PowerTraceExpanderSolver(input, options);
     // The clear branch widens before the blocked branch uses the search budget.
     solver.MAX_ITERATIONS = 16;
     let duringSearch: SimplifiedPcbTrace | undefined;
@@ -175,15 +177,18 @@ test("the search cutoff discards the width of a clear branch", async () => {
     return { duringSearch: duringSearch!, output: solver.getOutput() };
   };
 
-  const { duringSearch, output } = solveAtBudget();
-  expect(output).toEqual(traces);
+  const disabled = solveAtBudget();
+  const enabled = solveAtBudget(true);
+  expect(enabled.duringSearch).toEqual(disabled.duringSearch);
+  expect(disabled.output).toEqual(traces);
+  expect(enabled.output).toEqual(traces);
   expect(
-    new PhysicalConnectivityInvariant(input, traces).validate(output).safe,
+    new PhysicalConnectivityInvariant(input, traces).validate(enabled.output).safe,
   ).toBe(true);
 
   const runs = [
-    ["During search", duringSearch],
-    ["Returned route", output[0]!],
+    ["Widening off", disabled.output[0]!],
+    ["Widening on", enabled.output[0]!],
   ] as const;
   const panels = runs.map(([label, clearBranch]) => {
     const points = clearBranch.route.filter(
