@@ -39,7 +39,7 @@ type SolverPhase =
   | "try-trace-inflation"
   | "try-layer-candidate"
   | "try-grid-candidate"
-  | "finish-branch-widths"
+  | "widen-in-place-at-search-limit"
   | "cleanup"
   | "repair-trace-clearance"
   | "complete";
@@ -88,7 +88,7 @@ const LAYER_GRID_VARIANTS: Array<{
 const TOTAL_OPERATION_BUDGET = 8_000_000;
 const OPERATIONS_PER_ITERATION = 64;
 const FINALIZATION_ITERATION_RESERVE_FRACTION = 1 / 8;
-const BRANCH_WIDTH_SHARE_OF_FINALIZATION_BUDGET = 1 / 8;
+const IN_PLACE_WIDENING_SHARE_OF_FINALIZATION_BUDGET = 1 / 8;
 const CLEANUP_SHARE_OF_FINALIZATION_BUDGET = 3 / 4;
 const MAX_RETAINED_FAILED_SUBSOLVERS = 16;
 
@@ -122,7 +122,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private readonly immutableTraceIndices: number[];
   private readonly initialImmutableTraceSignatures = new Map<number, string>();
   private traceOrderCursor = -1;
-  private branchWidthFinalizationLimit = 0;
+  private inPlaceWideningOperationLimit = 0;
   private readonly maxPassCount = 4;
   private previousWidthDeficit = 0;
   passIndex = 0;
@@ -373,8 +373,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       case "try-grid-candidate":
         this.startNextGridCandidate();
         break;
-      case "finish-branch-widths":
-        this.finishNextBranchWidth();
+      case "widen-in-place-at-search-limit":
+        this.stepInPlaceWidening();
         break;
       case "cleanup":
         // The active cleanup solver is stepped before the phase switch.
@@ -534,25 +534,25 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.layerAttempt = null;
     this.discardInFlightExpansion();
     // Keep most of the reserve for cleanup and final clearance repair.
-    const branchWidthBudget = this.options.finishBranchWidthsInPlace
+    const inPlaceWideningBudget = this.options.widenInPlaceAtSearchLimit
       ? Math.floor(
           this.getRemainingChildStepBudget() *
-            BRANCH_WIDTH_SHARE_OF_FINALIZATION_BUDGET,
+            IN_PLACE_WIDENING_SHARE_OF_FINALIZATION_BUDGET,
         )
       : 0;
-    if (branchWidthBudget > 0) {
-      this.branchWidthFinalizationLimit =
-        this.getOperationCount() + branchWidthBudget;
+    if (inPlaceWideningBudget > 0) {
+      this.inPlaceWideningOperationLimit =
+        this.getOperationCount() + inPlaceWideningBudget;
       this.traceOrderCursor = -1;
       this.traceIndex = -1;
-      this.phase = "finish-branch-widths";
+      this.phase = "widen-in-place-at-search-limit";
       return;
     }
     this.startCleanup();
   }
 
-  private finishNextBranchWidth() {
-    if (this.getOperationCount() > this.branchWidthFinalizationLimit) {
+  private stepInPlaceWidening() {
+    if (this.getOperationCount() > this.inPlaceWideningOperationLimit) {
       this.startCleanup();
       return;
     }
@@ -574,7 +574,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         isWire(end) &&
         distance(start, end) > WIDTH_EPSILON
       ) {
-        this.tryFinishBranchSegmentWidth(trace, start, end);
+        this.tryWidenSegmentInPlace(trace, start, end);
       }
       return;
     }
@@ -604,7 +604,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.rebuildObstacleIndex();
   }
 
-  private tryFinishBranchSegmentWidth(
+  private tryWidenSegmentInPlace(
     trace: SimplifiedPcbTrace,
     start: WireRoutePoint,
     end: WireRoutePoint,
@@ -2873,7 +2873,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.traceIndex,
       [],
       this.connectionNameResolver,
-      this.phase === "finish-branch-widths",
+      this.phase === "widen-in-place-at-search-limit",
     );
   }
 

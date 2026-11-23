@@ -100,7 +100,7 @@ test("reserves budget for cleanup and clearance repair", () => {
   });
 });
 
-test("optionally finishes clear branch widths in place when expansion hits its budget", () => {
+test("optionally widens clear branches in place at the search limit", () => {
   const trace = (
     name: string,
     y: number,
@@ -139,10 +139,10 @@ test("optionally finishes clear branch widths in place when expansion hits its b
       ),
     })),
   };
-  const solveAtBudget = (finishBranchWidthsInPlace?: boolean) => {
+  const solveAtBudget = (widenInPlaceAtSearchLimit?: boolean) => {
     const solver = new PowerTraceExpanderSolver(input, {
       onlyConnectionNames: ["clear", "blocked", "no-branch-target"],
-      finishBranchWidthsInPlace,
+      widenInPlaceAtSearchLimit,
     });
     solver.iterations = Number(solver.stats.expansionIterationBudget);
     solver.solve();
@@ -235,7 +235,7 @@ test("budget widening checks the reversed envelopes of the branch and its peers"
     ],
   };
   const solver = new PowerTraceExpanderSolver(input, {
-    finishBranchWidthsInPlace: true,
+    widenInPlaceAtSearchLimit: true,
   });
   solver.iterations = Number(solver.stats.expansionIterationBudget);
   solver.solve();
