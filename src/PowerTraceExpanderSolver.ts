@@ -8,6 +8,10 @@ import {
   splitUnderWidthWireSegments,
   WIDTH_EPSILON,
 } from "./geometry";
+import {
+  getNominalTraceWidth,
+  getRequestedTraceWidth,
+} from "./getNominalTraceWidth";
 import { LayerAwareGridRouteSolver } from "./LayerAwareGridRouteSolver";
 import { LocalTraceInflationSolver } from "./LocalTraceInflationSolver";
 import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
@@ -962,8 +966,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     for (let traceIndex = 0; traceIndex < this.traces.length; traceIndex++) {
       if (traceIndex === this.traceIndex) continue;
       const trace = this.traces[traceIndex]!;
-      if (!this.findConnectionForTrace(trace)) continue;
-      const width = this.resolveNominalTraceWidth(trace);
+      const connection = this.findConnectionForTrace(trace);
+      if (!connection) continue;
+      const width = getNominalTraceWidth(this.inputProblem, trace, connection);
       if (width < targetWidth - WIDTH_EPSILON) indices.push(traceIndex);
     }
     return indices;
@@ -1871,11 +1876,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
         const connection = this.findConnectionForTrace(blockingTrace);
         if (
           !connection ||
-          (blockingTrace.nominalTraceWidth ??
-            connection.nominalTraceWidth ??
-            connection.width ??
-            this.inputProblem.nominalTraceWidth ??
-            this.inputProblem.minTraceWidth) >=
+          getRequestedTraceWidth(this.inputProblem, blockingTrace, connection) >=
             targetWidth - WIDTH_EPSILON
         ) {
           return false;
@@ -2596,14 +2597,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
 
   private resolveNominalTraceWidth(trace: SimplifiedPcbTrace) {
     const connection = this.findConnectionForTrace(trace);
-    return Math.max(
-      trace.nominalTraceWidth ??
-        connection?.nominalTraceWidth ??
-        connection?.width ??
-        this.inputProblem.nominalTraceWidth ??
-        this.inputProblem.minTraceWidth,
-      this.inputProblem.minTraceWidth,
-    );
+    return getNominalTraceWidth(this.inputProblem, trace, connection);
   }
 
   private getDesiredPadClearance(nominalWidth = this.nominalTraceWidth) {
