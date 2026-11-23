@@ -450,13 +450,12 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         distance(a.point, context.via) - distance(b.point, context.via),
     );
     for (const candidate of candidates) {
-      if (this.isViaRepairPointSafe(context, candidate.point, padClearance)) {
-        return this.createViaRepairReplacement(
-          context,
-          candidate.point,
-          padClearance,
-        );
-      }
+      const replacement = this.getViaRepairReplacement(
+        context,
+        candidate.point,
+        padClearance,
+      );
+      if (replacement) return replacement;
     }
     return null;
   }
@@ -504,7 +503,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       if (blockers.size === 0 || blockers.size > 2) return [];
       const ignoredTraceIndices = [...blockers];
       if (
-        !this.isViaRepairPointSafe(
+        !this.getViaRepairReplacement(
           context,
           point,
           padClearance,
@@ -695,12 +694,12 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     ];
   }
 
-  private isViaRepairPointSafe(
+  private getViaRepairReplacement(
     context: ViaRepairContext,
     point: Point,
     padClearance: number,
     ignoreTraceIndices?: number[],
-  ) {
+  ): ViaRepairReplacement | null {
     const traceIndex = this.viaRepairTraceIndices[this.traceCursor];
     if (
       this.obstacleIndex.collidesVia({
@@ -717,25 +716,8 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         sameNetObstacleClearance: 0,
       })
     ) {
-      return false;
+      return null;
     }
-    return (
-      this.getViaRepairArms(
-        context,
-        point,
-        padClearance,
-        ignoreTraceIndices,
-      ) !== null
-    );
-  }
-
-  private getViaRepairArms(
-    context: ViaRepairContext,
-    point: Point,
-    padClearance: number,
-    ignoreTraceIndices?: number[],
-  ): { left: Point[]; right: Point[] } | null {
-    const traceIndex = this.viaRepairTraceIndices[this.traceCursor];
     const sides = [
       { start: context.leftAnchor, end: point, wire: context.leftWire },
       { start: point, end: context.rightAnchor, wire: context.rightWire },
@@ -766,22 +748,13 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         ),
       );
     });
-    return paths[0] && paths[1] ? { left: paths[0], right: paths[1] } : null;
-  }
-
-  private createViaRepairReplacement(
-    context: ViaRepairContext,
-    point: Point,
-    padClearance: number,
-  ): ViaRepairReplacement {
-    const arms = this.getViaRepairArms(context, point, padClearance);
-    if (!arms)
-      throw new Error("A validated via repair lost its octilinear approaches");
-    const left = (context.leftIsEndpoint ? arms.left : arms.left.slice(1)).map(
+    const [leftPath, rightPath] = paths;
+    if (!leftPath || !rightPath) return null;
+    const left = (context.leftIsEndpoint ? leftPath : leftPath.slice(1)).map(
       (point): WireRoutePoint => ({ ...context.leftWire, ...point }),
     );
     const right = (
-      context.rightIsEndpoint ? arms.right : arms.right.slice(0, -1)
+      context.rightIsEndpoint ? rightPath : rightPath.slice(0, -1)
     ).map((point): WireRoutePoint => ({ ...context.rightWire, ...point }));
     return {
       startIndex: context.viaIndex - 1,
@@ -825,15 +798,14 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         const context = trace
           ? this.createViaRepairContext(trace, repair.viaIndex)
           : null;
-        if (
-          context &&
-          this.isViaRepairPointSafe(context, repair.point, repair.padClearance)
-        ) {
-          const replacement = this.createViaRepairReplacement(
-            context,
-            repair.point,
-            repair.padClearance,
-          );
+        const replacement = context
+          ? this.getViaRepairReplacement(
+              context,
+              repair.point,
+              repair.padClearance,
+            )
+          : null;
+        if (replacement) {
           trace!.route.splice(
             replacement.startIndex,
             replacement.endIndex - replacement.startIndex + 1,
