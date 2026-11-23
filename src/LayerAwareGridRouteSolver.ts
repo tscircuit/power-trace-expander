@@ -1,6 +1,7 @@
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { clamp, distance, pointsEqual } from "./geometry";
+import { isOctilinearSegment } from "./octilinear";
 import type {
   CopperRoutePoint,
   LayerGridRouteOutput,
@@ -593,6 +594,8 @@ export class LayerAwareGridRouteSolver extends BaseSolver {
     startIndex: number,
     endIndex: number,
   ) {
+    if (!isOctilinearSegment(points[startIndex]!, points[endIndex]!))
+      return false;
     const width = this.getSafeSegmentWidth(
       points[startIndex]!,
       points[endIndex]!,
@@ -662,6 +665,11 @@ export class LayerAwareGridRouteSolver extends BaseSolver {
           edgeWidths[startIndex]!,
         );
         if (!Number.isFinite(deficitByIndex[startIndex]!)) continue;
+        if (
+          endIndex > startIndex + 1 &&
+          !isOctilinearSegment(points[startIndex]!, points[endIndex]!)
+        )
+          continue;
         const width = this.getSafeSegmentWidth(
           points[startIndex]!,
           points[endIndex]!,

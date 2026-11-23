@@ -451,7 +451,11 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     );
     for (const candidate of candidates) {
       if (this.isViaRepairPointSafe(context, candidate.point, padClearance)) {
-        return this.createViaRepairReplacement(context, candidate.point);
+        return this.createViaRepairReplacement(
+          context,
+          candidate.point,
+          padClearance,
+        );
       }
     }
     return null;
@@ -715,33 +719,67 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     ) {
       return false;
     }
-    return !this.getViaRepairCollisionQueries(
-      context,
-      point,
-      padClearance,
-      ignoreTraceIndices,
-    )
-      .slice(this.obstacleIndex.boardLayers.length)
-      .some((query) => this.obstacleIndex.collides(query));
+    return (
+      this.getViaRepairArms(
+        context,
+        point,
+        padClearance,
+        ignoreTraceIndices,
+      ) !== null
+    );
+  }
+
+  private getViaRepairArms(
+    context: ViaRepairContext,
+    point: Point,
+    padClearance: number,
+    ignoreTraceIndices?: number[],
+  ): { left: Point[]; right: Point[] } | null {
+    const traceIndex = this.viaRepairTraceIndices[this.traceCursor];
+    const sides = [
+      { start: context.leftAnchor, end: point, wire: context.leftWire },
+      { start: point, end: context.rightAnchor, wire: context.rightWire },
+    ];
+    const paths = sides.map(({ start, end, wire }) => {
+      if (distance(start, end) <= WIDTH_EPSILON) return [start];
+      return calculateOctilinearPaths(start, end).find((path) =>
+        path.slice(1).every(
+          (next, index) =>
+            !this.obstacleIndex.collides({
+              start: path[index]!,
+              end: next,
+              layer: wire.layer,
+              width: wire.width,
+              connectionNames: context.connectionNames,
+              ignoreTraceIndex: traceIndex,
+              ignoreTraceIndices,
+              ignoreRouteRange: context.ignoreRouteRange,
+              obstacleClearance: padClearance,
+            }),
+        ),
+      );
+    });
+    return paths[0] && paths[1] ? { left: paths[0], right: paths[1] } : null;
   }
 
   private createViaRepairReplacement(
     context: ViaRepairContext,
     point: Point,
+    padClearance: number,
   ): ViaRepairReplacement {
-    const movedLeft: WireRoutePoint = { ...context.leftWire, ...point };
-    const movedVia: ViaRoutePoint = { ...context.via, ...point };
-    const movedRight: WireRoutePoint = { ...context.rightWire, ...point };
+    const arms = this.getViaRepairArms(context, point, padClearance);
+    if (!arms)
+      throw new Error("A validated via repair lost its octilinear approaches");
+    const left = (context.leftIsEndpoint ? arms.left : arms.left.slice(1)).map(
+      (point): WireRoutePoint => ({ ...context.leftWire, ...point }),
+    );
+    const right = (
+      context.rightIsEndpoint ? arms.right : arms.right.slice(0, -1)
+    ).map((point): WireRoutePoint => ({ ...context.rightWire, ...point }));
     return {
       startIndex: context.viaIndex - 1,
       endIndex: context.viaIndex + 1,
-      route: [
-        ...(context.leftIsEndpoint ? [context.leftWire] : []),
-        movedLeft,
-        movedVia,
-        movedRight,
-        ...(context.rightIsEndpoint ? [context.rightWire] : []),
-      ],
+      route: [...left, { ...context.via, ...point }, ...right],
     };
   }
 
@@ -787,6 +825,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
           const replacement = this.createViaRepairReplacement(
             context,
             repair.point,
+            repair.padClearance,
           );
           trace!.route.splice(
             replacement.startIndex,

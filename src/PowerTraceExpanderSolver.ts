@@ -1070,6 +1070,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       traceWidth: candidateWidth,
       gridSize,
       gridOffset,
+      requireOctilinear: true,
       connectionNames: this.getTraceConnectionNames(trace),
       obstacleIndex: this.obstacleIndex,
       ignoreTraceIndex: this.traceIndex,
