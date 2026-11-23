@@ -104,6 +104,8 @@ export type SimpleRouteJson = {
   minBoardEdgeClearance?: number;
   minViaHoleEdgeToViaHoleEdgeClearance?: number;
   bounds: { minX: number; maxX: number; minY: number; maxY: number };
+  /** Opt-in physical board boundary for copper clearance checks. */
+  boardOutline?: ReadonlyArray<Point>;
   connections: SimpleRouteConnection[];
   obstacles: Obstacle[];
   traces?: SimplifiedPcbTrace[];

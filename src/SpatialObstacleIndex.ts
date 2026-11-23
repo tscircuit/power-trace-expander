@@ -1,6 +1,7 @@
 import Flatbush from "flatbush";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
+  createBoardOutlineClearanceChecker,
   createObstacleIndexItems,
   createSegmentIndexItems,
   distancePointToSegment,
@@ -51,6 +52,9 @@ export class SpatialObstacleIndex {
   readonly minViaHoleEdgeToViaHoleEdgeClearance: number;
   readonly defaultViaHoleDiameter: number;
   readonly bounds: SimpleRouteJson["bounds"];
+  private readonly checkBoardOutlineClearance?: ReturnType<
+    typeof createBoardOutlineClearanceChecker
+  >;
   private readonly maxIndexedViaHoleDiameter: number;
   private readonly index: Flatbush | null;
   private readonly collisionIndexesByLayer = new Map<
@@ -74,6 +78,11 @@ export class SpatialObstacleIndex {
     ),
   ) {
     this.bounds = simpleRouteJson.bounds;
+    if (simpleRouteJson.boardOutline) {
+      this.checkBoardOutlineClearance = createBoardOutlineClearanceChecker(
+        simpleRouteJson.boardOutline,
+      );
+    }
     this.boardLayers = getBoardLayers(simpleRouteJson.layerCount);
     this.dynamicTraceIndex = dynamicTraceIndex;
     this.clearance = Math.max(
@@ -250,7 +259,7 @@ export class SpatialObstacleIndex {
   }
 
   collides(query: CollisionQuery): boolean {
-    if (this.isOutsideBounds(query)) return true;
+    if (this.isOutsideBoard(query)) return true;
     const { radius, candidates, canonicalConnectionNames } =
       this.getCollisionCandidates(query, true);
     for (const itemIndex of candidates) {
@@ -341,7 +350,7 @@ export class SpatialObstacleIndex {
       }
       segment.start = start;
       segment.end = end;
-      if (this.isOutsideBounds(segment)) return true;
+      if (this.isOutsideBoard(segment)) return true;
       minX = Math.min(start.x, end.x) - radius;
       minY = Math.min(start.y, end.y) - radius;
       maxX = Math.max(start.x, end.x) + radius;
@@ -657,7 +666,7 @@ export class SpatialObstacleIndex {
         blockSameNetObstacles: query.blockSameNetObstacles,
         sameNetObstacleClearance: query.sameNetObstacleClearance,
       };
-      if (this.isOutsideBounds(collisionQuery)) {
+      if (this.isOutsideBoard(collisionQuery)) {
         violations.add(`board-edge:${layer}`);
       }
       const { radius, candidates, canonicalConnectionNames } =
@@ -1002,13 +1011,15 @@ export class SpatialObstacleIndex {
     });
   }
 
-  private isOutsideBounds(query: CollisionQuery) {
+  private isOutsideBoard(query: CollisionQuery): boolean {
     const radius = query.width / 2 + this.boardEdgeClearance;
     return (
       Math.min(query.start.x, query.end.x) - radius < this.bounds.minX ||
       Math.max(query.start.x, query.end.x) + radius > this.bounds.maxX ||
       Math.min(query.start.y, query.end.y) - radius < this.bounds.minY ||
-      Math.max(query.start.y, query.end.y) + radius > this.bounds.maxY
+      Math.max(query.start.y, query.end.y) + radius > this.bounds.maxY ||
+      (this.checkBoardOutlineClearance !== undefined &&
+        !this.checkBoardOutlineClearance(query.start, query.end, radius))
     );
   }
 }
