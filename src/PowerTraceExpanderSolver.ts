@@ -4,6 +4,7 @@ import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import {
   clamp,
   distance,
+  getDirectionIndependentTraceClearanceSegments,
   splitUnderWidthWireSegments,
   WIDTH_EPSILON,
 } from "./geometry";
@@ -38,6 +39,7 @@ type SolverPhase =
   | "try-trace-inflation"
   | "try-layer-candidate"
   | "try-grid-candidate"
+  | "widen-in-place-at-search-limit"
   | "cleanup"
   | "repair-trace-clearance"
   | "complete";
@@ -86,6 +88,7 @@ const LAYER_GRID_VARIANTS: Array<{
 const TOTAL_OPERATION_BUDGET = 8_000_000;
 const OPERATIONS_PER_ITERATION = 64;
 const FINALIZATION_ITERATION_RESERVE_FRACTION = 1 / 8;
+const IN_PLACE_WIDENING_SHARE_OF_FINALIZATION_BUDGET = 1 / 8;
 const CLEANUP_SHARE_OF_FINALIZATION_BUDGET = 3 / 4;
 const MAX_RETAINED_FAILED_SUBSOLVERS = 16;
 
@@ -119,6 +122,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
   private readonly immutableTraceIndices: number[];
   private readonly initialImmutableTraceSignatures = new Map<number, string>();
   private traceOrderCursor = -1;
+  private inPlaceWideningOperationLimit = 0;
   private readonly maxPassCount = 4;
   private previousWidthDeficit = 0;
   passIndex = 0;
@@ -369,6 +373,9 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       case "try-grid-candidate":
         this.startNextGridCandidate();
         break;
+      case "widen-in-place-at-search-limit":
+        this.stepInPlaceWidening();
+        break;
       case "cleanup":
         // The active cleanup solver is stepped before the phase switch.
         break;
@@ -526,7 +533,105 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.activeInflationWidth = null;
     this.layerAttempt = null;
     this.discardInFlightExpansion();
+    // Keep most of the reserve for cleanup and final clearance repair.
+    const inPlaceWideningBudget = this.options.widenInPlaceAtSearchLimit
+      ? Math.floor(
+          this.getRemainingChildStepBudget() *
+            IN_PLACE_WIDENING_SHARE_OF_FINALIZATION_BUDGET,
+        )
+      : 0;
+    if (inPlaceWideningBudget > 0) {
+      this.inPlaceWideningOperationLimit =
+        this.getOperationCount() + inPlaceWideningBudget;
+      this.traceOrderCursor = -1;
+      this.traceIndex = -1;
+      this.phase = "widen-in-place-at-search-limit";
+      return;
+    }
     this.startCleanup();
+  }
+
+  private stepInPlaceWidening() {
+    if (this.getOperationCount() > this.inPlaceWideningOperationLimit) {
+      this.startCleanup();
+      return;
+    }
+
+    const trace = this.traces[this.traceIndex];
+    const segmentIndex = trace
+      ? this.findNextUnderWidthSegment(
+          trace,
+          this.routeSegmentIndex,
+          this.nominalTraceWidth,
+        )
+      : -1;
+    if (trace && segmentIndex !== -1) {
+      this.routeSegmentIndex = segmentIndex + 1;
+      const start = trace.route[segmentIndex];
+      const end = trace.route[segmentIndex + 1];
+      if (
+        isWire(start) &&
+        isWire(end) &&
+        distance(start, end) > WIDTH_EPSILON
+      ) {
+        this.tryWidenSegmentInPlace(trace, start, end);
+      }
+      return;
+    }
+
+    const nextTraceIndex = this.traceOrder[++this.traceOrderCursor];
+    if (nextTraceIndex === undefined) {
+      this.startCleanup();
+      return;
+    }
+    const nextTrace = this.traces[nextTraceIndex]!;
+    if (
+      nextTrace.nominalTraceWidth === undefined ||
+      nextTrace.route_thickness_mode === "interpolated" ||
+      nextTrace.route.some(
+        (point) =>
+          isWire(point) &&
+          (point.start_width !== undefined || point.end_width !== undefined),
+      ) ||
+      !this.findConnectionForTrace(nextTrace)
+    ) {
+      this.traceIndex = -1;
+      return;
+    }
+    this.nominalTraceWidth = this.resolveNominalTraceWidth(nextTrace);
+    this.traceIndex = nextTraceIndex;
+    this.routeSegmentIndex = 0;
+    this.rebuildObstacleIndex();
+  }
+
+  private tryWidenSegmentInPlace(
+    trace: SimplifiedPcbTrace,
+    start: WireRoutePoint,
+    end: WireRoutePoint,
+  ) {
+    this.inPlaceWidthProbeCount++;
+    const before = getDirectionIndependentTraceClearanceSegments(trace);
+    const previousStartWidth = start.width;
+    const previousEndWidth = end.width;
+    start.width = Math.max(start.width, this.nominalTraceWidth);
+    end.width = Math.max(end.width, this.nominalTraceWidth);
+    const connectionNames = this.getTraceConnectionNames(trace);
+    const blocked = getDirectionIndependentTraceClearanceSegments(trace).some(
+      (segment, index) =>
+        segment &&
+        segment.width > before[index]!.width + WIDTH_EPSILON &&
+        this.obstacleIndex.collides({
+          ...segment,
+          connectionNames,
+          obstacleClearance: this.getDesiredPadClearance(segment.width),
+        }),
+    );
+    if (blocked) {
+      start.width = previousStartWidth;
+      end.width = previousEndWidth;
+    } else {
+      this.expandedSegmentCount++;
+    }
   }
 
   private discardInFlightExpansion() {
@@ -2768,6 +2873,7 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       this.traceIndex,
       [],
       this.connectionNameResolver,
+      this.phase === "widen-in-place-at-search-limit",
     );
   }
 
