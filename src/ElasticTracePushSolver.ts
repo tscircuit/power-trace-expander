@@ -1,7 +1,6 @@
 import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { clamp, distance, pointsEqual } from "./geometry";
-import { calculateOctilinearPaths } from "./octilinear";
 import type {
   ElasticTracePushOutput,
   ElasticTracePushProblem,
@@ -215,17 +214,13 @@ export class ElasticTracePushSolver extends BaseSolver {
     let anchorIndex = 0;
     while (anchorIndex < points.length - 1) {
       let nextIndex = points.length - 1;
-      let replacement: Point[] | undefined;
-      while (nextIndex > anchorIndex) {
-        replacement = calculateOctilinearPaths(
-          points[anchorIndex]!,
-          points[nextIndex]!,
-        ).find((path) => !this.pathCollides(path));
-        if (replacement) break;
+      while (
+        nextIndex > anchorIndex + 1 &&
+        this.segmentCollides(points[anchorIndex]!, points[nextIndex]!)
+      ) {
         nextIndex--;
       }
-      if (!replacement) return [];
-      simplified.push(...replacement.slice(1));
+      simplified.push(points[nextIndex]!);
       anchorIndex = nextIndex;
     }
     return simplified.filter(

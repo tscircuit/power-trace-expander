@@ -55,6 +55,7 @@ test("relocating a via preserves native headings on both clearance-checked arms"
     ],
   };
   const solver = new PowerTraceCleanupSolver({
+    requireOctilinearViaApproaches: true,
     simpleRouteJson: input,
     traces: [trace],
   });

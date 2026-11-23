@@ -116,6 +116,8 @@ export type CopperRoutePoint = WireRoutePoint | ViaRoutePoint;
 export type PowerTraceExpanderInput = SimpleRouteJson;
 
 export type PowerTraceExpanderOptions = {
+  /** Keep relocated via approaches on straight and 45-degree headings. Opt-in. */
+  requireOctilinearViaApproaches?: boolean;
   /** Restrict the top-level scan while still allowing nearby traces to move. */
   onlyConnectionNames?: readonly string[];
   /**
@@ -133,6 +135,8 @@ export type PowerTraceExpanderOptions = {
 export type PowerTraceExpanderOutput = SimplifiedPcbTrace[];
 
 export type PowerTraceCleanupProblem = {
+  /** Keep relocated via approaches on straight and 45-degree headings. Opt-in. */
+  requireOctilinearViaApproaches?: boolean;
   simpleRouteJson: SimpleRouteJson;
   traces: SimplifiedPcbTrace[];
   /** Restrict cleanup to these traces while retaining all traces as obstacles. */

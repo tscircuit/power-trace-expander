@@ -361,7 +361,6 @@ export class LocalTraceInflationSolver extends BaseSolver {
         x: normalizedOffset.x * gridSize,
         y: normalizedOffset.y * gridSize,
       },
-      requireOctilinear: true,
       connectionNames: this.getTraceConnectionNames(trace),
       obstacleIndex,
       ignoreTraceIndex: this.currentBlocker.traceIndex,

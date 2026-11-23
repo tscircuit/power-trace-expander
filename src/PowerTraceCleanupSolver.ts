@@ -741,8 +741,15 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       { start: point, end: context.rightAnchor, wire: context.rightWire },
     ];
     const paths = sides.map(({ start, end, wire }) => {
-      if (distance(start, end) <= WIDTH_EPSILON) return [start];
-      return calculateOctilinearPaths(start, end).find((path) =>
+      if (
+        this.inputProblem.requireOctilinearViaApproaches &&
+        distance(start, end) <= WIDTH_EPSILON
+      )
+        return [start];
+      const candidates = this.inputProblem.requireOctilinearViaApproaches
+        ? calculateOctilinearPaths(start, end)
+        : [[start, end]];
+      return candidates.find((path) =>
         path.slice(1).every(
           (next, index) =>
             !this.obstacleIndex.collides({

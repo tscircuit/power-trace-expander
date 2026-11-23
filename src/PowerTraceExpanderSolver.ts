@@ -449,6 +449,8 @@ export class PowerTraceExpanderSolver extends BaseSolver {
     this.traceIndex = this.traces.length;
     this.phase = "cleanup";
     const cleanupSolver = new PowerTraceCleanupSolver({
+      requireOctilinearViaApproaches:
+        this.options.requireOctilinearViaApproaches,
       simpleRouteJson: this.inputProblem,
       traces: this.traces,
       traceIndices: this.selectedCleanupTraceIndices,
@@ -1070,7 +1072,6 @@ export class PowerTraceExpanderSolver extends BaseSolver {
       traceWidth: candidateWidth,
       gridSize,
       gridOffset,
-      requireOctilinear: true,
       connectionNames: this.getTraceConnectionNames(trace),
       obstacleIndex: this.obstacleIndex,
       ignoreTraceIndex: this.traceIndex,
