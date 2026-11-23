@@ -2,6 +2,7 @@ import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import { WIDTH_EPSILON } from "./geometry";
+import { getNominalTraceWidth } from "./getNominalTraceWidth";
 import { PhysicalConnectivityInvariant } from "./PhysicalConnectivityInvariant";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
@@ -403,12 +404,10 @@ export class PowerTraceClearanceRepairSolver extends BaseSolver {
           )
           .some((name) => traceNames.has(name)),
     );
-    const nominalWidth = Math.max(
-      connection?.nominalTraceWidth ??
-        connection?.width ??
-        this.inputProblem.simpleRouteJson.nominalTraceWidth ??
-        this.minimumTraceWidth,
-      this.minimumTraceWidth,
+    const nominalWidth = getNominalTraceWidth(
+      this.inputProblem.simpleRouteJson,
+      trace,
+      connection,
     );
     this.nominalWidthByTraceId.set(trace.pcb_trace_id, nominalWidth);
     return nominalWidth;

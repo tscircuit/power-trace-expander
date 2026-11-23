@@ -9,6 +9,7 @@ import {
   distancePointToSegment,
   WIDTH_EPSILON,
 } from "./geometry";
+import { getNominalTraceWidth } from "./getNominalTraceWidth";
 import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
 import { SpatialObstacleIndex } from "./SpatialObstacleIndex";
 import type {
@@ -196,7 +197,11 @@ export class LocalTraceInflationSolver extends BaseSolver {
     // still gives us stable endpoints and a conservative nominal width, so
     // they are safe to shove without inventing connectivity metadata.
     const traceWidth = connection
-      ? this.resolveNominalTraceWidth(connection)
+      ? getNominalTraceWidth(
+          this.inputProblem.simpleRouteJson,
+          trace,
+          connection,
+        )
       : this.getTraceNominalWidth(trace);
     if (
       traceWidth >=
@@ -494,16 +499,6 @@ export class LocalTraceInflationSolver extends BaseSolver {
       length += distance(start, end);
     }
     return length;
-  }
-
-  private resolveNominalTraceWidth(connection: SimpleRouteConnection) {
-    return Math.max(
-      connection.nominalTraceWidth ??
-        connection.width ??
-        this.inputProblem.simpleRouteJson.nominalTraceWidth ??
-        this.inputProblem.simpleRouteJson.minTraceWidth,
-      this.inputProblem.simpleRouteJson.minTraceWidth,
-    );
   }
 
   private getTraceNominalWidth(trace: SimplifiedPcbTrace) {

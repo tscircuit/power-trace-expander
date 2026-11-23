@@ -1,8 +1,5 @@
-import type {
-  SimpleRouteConnection,
-  SimpleRouteJson,
-  SimplifiedPcbTrace,
-} from "./types";
+import { getNominalTraceWidth } from "./getNominalTraceWidth";
+import type { SimpleRouteJson, SimplifiedPcbTrace } from "./types";
 
 export const TRACE_WIDTH_COVERAGE_FRACTIONS = [
   0.25, 0.5, 0.75, 0.875, 0.9, 1,
@@ -65,18 +62,6 @@ const findConnection = (
   );
 };
 
-const getNominalWidth = (
-  problem: SimpleRouteJson,
-  connection: SimpleRouteConnection,
-) =>
-  Math.max(
-    connection.nominalTraceWidth ??
-      connection.width ??
-      problem.nominalTraceWidth ??
-      problem.minTraceWidth,
-    problem.minTraceWidth,
-  );
-
 const getLengthWeightedPercentile = (
   segments: SegmentMeasurement[],
   totalLength: number,
@@ -118,7 +103,7 @@ export const measureTraceWidths = (
   for (const trace of traces) {
     const connection = findConnection(problem, trace);
     if (!connection) continue;
-    const nominalWidth = getNominalWidth(problem, connection);
+    const nominalWidth = getNominalTraceWidth(problem, trace, connection);
     const metric = accumulators.get(nominalWidth) ?? {
       traceCount: 0,
       totalLength: 0,

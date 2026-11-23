@@ -2,6 +2,7 @@ import { BaseSolver } from "@tscircuit/solver-utils";
 import type { GraphicsObject } from "graphics-debug";
 import { ConnectionNameResolver } from "./ConnectionNameResolver";
 import { clamp, distance, WIDTH_EPSILON } from "./geometry";
+import { getNominalTraceWidth } from "./getNominalTraceWidth";
 import { LocalTraceInflationSolver } from "./LocalTraceInflationSolver";
 import { ObstacleAwareGridRouteSolver } from "./ObstacleAwareGridRouteSolver";
 import {
@@ -2017,12 +2018,10 @@ export class PowerTraceCleanupSolver extends BaseSolver {
 
   private resolveNominalTraceWidth(trace: SimplifiedPcbTrace) {
     const connection = this.findConnectionForTrace(trace);
-    return Math.max(
-      connection?.nominalTraceWidth ??
-        connection?.width ??
-        this.inputProblem.simpleRouteJson.nominalTraceWidth ??
-        this.inputProblem.simpleRouteJson.minTraceWidth,
-      this.inputProblem.simpleRouteJson.minTraceWidth,
+    return getNominalTraceWidth(
+      this.inputProblem.simpleRouteJson,
+      trace,
+      connection,
     );
   }
 
