@@ -106,7 +106,7 @@ test("reserves budget for cleanup and clearance repair", () => {
   });
 });
 
-test("the search cutoff discards the clear branch width even when widening is requested", async () => {
+test("optionally widens clear branches in place at the search limit", async () => {
   const trace = (
     name: string,
     y: number,
@@ -181,7 +181,10 @@ test("the search cutoff discards the clear branch width even when widening is re
   const enabled = solveAtBudget(true);
   expect(enabled.duringSearch).toEqual(disabled.duringSearch);
   expect(disabled.output).toEqual(traces);
-  expect(enabled.output).toEqual(traces);
+  expect(enabled.output).toEqual([
+    trace("clear", 0, 0.8, 0.8),
+    ...traces.slice(1),
+  ]);
   expect(
     new PhysicalConnectivityInvariant(input, traces).validate(enabled.output).safe,
   ).toBe(true);
@@ -224,6 +227,92 @@ test("the search cutoff discards the clear branch width even when widening is re
       svgHeight: 190,
     }),
   ).toMatchSvgSnapshot(import.meta.path, "widen-in-place");
+});
+
+test("budget widening checks the reversed envelopes of the branch and its peers", () => {
+  const trace = (
+    name: string,
+    points: ReadonlyArray<readonly [x: number, y: number, width?: number]>,
+  ): SimplifiedPcbTrace => ({
+    type: "pcb_trace",
+    pcb_trace_id: name,
+    connection_name: name,
+    nominalTraceWidth: 0.8,
+    route: points.map(([x, y, width = 0.15]) => ({
+      route_type: "wire",
+      layer: "top",
+      width,
+      x,
+      y,
+    })),
+  });
+  const traces = [
+    trace("hole-side-branch", [
+      [-5, 0],
+      [-4, 0],
+      [-4, 3],
+      [4, 3],
+    ]),
+    trace("peer-side-branch", [
+      [-2, 5.75],
+      [2, 5.75],
+    ]),
+  ];
+  const input: PowerTraceExpanderInput = {
+    bounds: { minX: -7, minY: -2, maxX: 7, maxY: 9 },
+    layerCount: 2,
+    minTraceWidth: 0.15,
+    minTraceToHoleEdgeClearance: 0.2,
+    obstacles: [
+      {
+        type: "rect",
+        shape: "circle",
+        isNonPlatedHole: true,
+        center: { x: 0, y: 3.55 },
+        width: 0.4,
+        height: 0.4,
+        layers: ["top", "bottom"],
+        connectedTo: [],
+      },
+    ],
+    traces,
+    fixedTraces: [
+      trace("peer", [
+        [-5, 7],
+        [-4, 7, 0.8],
+        [-4, 5],
+        [4, 5],
+      ]),
+    ],
+    connections: [
+      {
+        name: "hole-side-branch",
+        pointsToConnect: [
+          { x: -5, y: 0, layer: "top" },
+          { x: 4, y: 3, layer: "top" },
+        ],
+      },
+      {
+        name: "peer-side-branch",
+        pointsToConnect: [
+          { x: -2, y: 5.75, layer: "top" },
+          { x: 2, y: 5.75, layer: "top" },
+        ],
+      },
+    ],
+  };
+  const solver = new PowerTraceExpanderSolver(input, {
+    widenInPlaceAtSearchLimit: true,
+  });
+  solver.iterations = Number(solver.stats.expansionIterationBudget);
+  solver.solve();
+
+  expect(solver.stats).toMatchObject({
+    budgetLimitedExpansion: true,
+    expandedSegmentCount: 0,
+    clearanceRepairCompleted: true,
+  });
+  expect(solver.getOutput()).toEqual(traces);
 });
 
 test("top-level final acceptance adopts cleanup's committed prefix", () => {
