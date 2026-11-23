@@ -1,6 +1,18 @@
 import { expect, test } from "bun:test";
+import "bun-match-svg";
+import {
+  getBounds,
+  getSvgFromGraphicsObject,
+  stackGraphicsHorizontally,
+} from "graphics-debug";
 import { simplifiedCases } from "../fixtures/simplified-cases";
-import { PowerTraceCleanupSolver, PowerTraceExpanderSolver } from "../src";
+import {
+  PowerTraceCleanupSolver,
+  PowerTraceExpanderSolver,
+  type PowerTraceExpanderInput,
+} from "../src";
+import { PhysicalConnectivityInvariant } from "../src/PhysicalConnectivityInvariant";
+import type { SimplifiedPcbTrace } from "../src/types";
 
 test("final acceptance never applies an in-flight candidate", () => {
   const solver = new PowerTraceExpanderSolver(
@@ -92,6 +104,126 @@ test("reserves budget for cleanup and clearance repair", () => {
     completionReason: "expansion_budget",
     resultStatus: "best_effort",
   });
+});
+
+test("the search cutoff discards the clear branch width even when widening is requested", async () => {
+  const trace = (
+    name: string,
+    y: number,
+    nominalTraceWidth?: number,
+    width = 0.15,
+  ): SimplifiedPcbTrace => ({
+    type: "pcb_trace",
+    pcb_trace_id: name,
+    connection_name: name,
+    nominalTraceWidth,
+    route: [
+      { route_type: "wire", layer: "top", width, x: -4, y },
+      { route_type: "wire", layer: "top", width, x: 4, y },
+    ],
+  });
+  const traces = [
+    trace("clear", 0, 0.8),
+    trace("blocked", 2, 0.8),
+    trace("no-branch-target", -2),
+    trace("not-selected", -4, 0.8),
+  ];
+  const input: PowerTraceExpanderInput = {
+    bounds: { minX: -6, minY: -6, maxX: 6, maxY: 6 },
+    layerCount: 2,
+    minTraceWidth: 0.15,
+    obstacles: [],
+    traces,
+    fixedTraces: [trace("blocker", 2.3)],
+    connections: traces.map(({ pcb_trace_id, route }) => ({
+      name: pcb_trace_id,
+      nominalTraceWidth: 0.8,
+      pointsToConnect: route.flatMap((point) =>
+        point.route_type === "wire"
+          ? [{ x: point.x, y: point.y, layer: point.layer }]
+          : [],
+      ),
+    })),
+  };
+  const solveAtBudget = (widenInPlaceAtSearchLimit?: boolean) => {
+    const options = {
+      onlyConnectionNames: ["clear", "blocked", "no-branch-target"],
+      widenInPlaceAtSearchLimit,
+    };
+    const solver = new PowerTraceExpanderSolver(input, options);
+    // The clear branch widens before the blocked branch uses the search budget.
+    solver.MAX_ITERATIONS = 16;
+    let duringSearch: SimplifiedPcbTrace | undefined;
+    while (!solver.solved && !solver.failed) {
+      solver.step();
+      if (duringSearch || solver.budgetLimitedExpansion) continue;
+      const clear = solver.traces[0]!;
+      if (
+        clear.route.length >= 2 &&
+        clear.route.every(
+          (point) => point.route_type === "wire" && point.width === 0.8,
+        )
+      ) {
+        duringSearch = structuredClone(clear);
+      }
+    }
+    expect(duringSearch?.pcb_trace_id).toBe("clear");
+    expect(solver.solved, solver.error ?? "").toBe(true);
+    expect(solver.stats).toMatchObject({
+      completionReason: "expansion_budget",
+      cleanupCompleted: true,
+      clearanceRepairCompleted: true,
+    });
+    return { duringSearch: duringSearch!, output: solver.getOutput() };
+  };
+
+  const disabled = solveAtBudget();
+  const enabled = solveAtBudget(true);
+  expect(enabled.duringSearch).toEqual(disabled.duringSearch);
+  expect(disabled.output).toEqual(traces);
+  expect(enabled.output).toEqual(traces);
+  expect(
+    new PhysicalConnectivityInvariant(input, traces).validate(enabled.output).safe,
+  ).toBe(true);
+
+  const runs = [
+    ["Widening off", disabled.output[0]!],
+    ["Widening on", enabled.output[0]!],
+  ] as const;
+  const panels = runs.map(([label, clearBranch]) => {
+    const points = clearBranch.route.filter(
+      (point) => point.route_type === "wire",
+    );
+    const start = points[0]!;
+    const end = points.at(-1)!;
+    return {
+      coordinateSystem: "cartesian" as const,
+      lines: [{ points, strokeWidth: start.width, strokeColor: "#087f5b" }],
+      texts: [
+        {
+          x: (start.x + end.x) / 2,
+          y: start.y + 1,
+          text: `${label} · ${start.width.toFixed(2)} mm`,
+          fontSize: 0.46,
+        },
+      ],
+    };
+  });
+  const comparison = stackGraphicsHorizontally(panels);
+  const { minX, maxX, maxY } = getBounds(comparison);
+  comparison.texts!.push({
+    x: (minX + maxX) / 2,
+    y: maxY + 0.75,
+    text: "Clear branch at the search limit",
+    fontSize: 0.58,
+  });
+  await expect(
+    getSvgFromGraphicsObject(comparison, {
+      backgroundColor: "white",
+      svgWidth: 800,
+      svgHeight: 190,
+    }),
+  ).toMatchSvgSnapshot(import.meta.path, "widen-in-place");
 });
 
 test("top-level final acceptance adopts cleanup's committed prefix", () => {
