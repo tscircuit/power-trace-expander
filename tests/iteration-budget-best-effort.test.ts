@@ -1,4 +1,9 @@
 import { expect, test } from "bun:test";
+import "bun-match-svg";
+import {
+  getSvgFromGraphicsObject,
+  stackGraphicsHorizontally,
+} from "graphics-debug";
 import { simplifiedCases } from "../fixtures/simplified-cases";
 import {
   PowerTraceCleanupSolver,
@@ -100,7 +105,7 @@ test("reserves budget for cleanup and clearance repair", () => {
   });
 });
 
-test("optionally widens clear branches in place at the search limit", () => {
+test("optionally widens clear branches in place at the search limit", async () => {
   const trace = (
     name: string,
     y: number,
@@ -122,13 +127,14 @@ test("optionally widens clear branches in place at the search limit", () => {
     trace("no-branch-target", -2),
     trace("not-selected", -4, 0.8),
   ];
+  const blocker = trace("blocker", 2.3);
   const input: PowerTraceExpanderInput = {
     bounds: { minX: -6, minY: -6, maxX: 6, maxY: 6 },
     layerCount: 2,
     minTraceWidth: 0.15,
     obstacles: [],
     traces,
-    fixedTraces: [trace("blocker", 2.3)],
+    fixedTraces: [blocker],
     connections: traces.map(({ pcb_trace_id, route }) => ({
       name: pcb_trace_id,
       nominalTraceWidth: 0.8,
@@ -151,15 +157,39 @@ test("optionally widens clear branches in place at the search limit", () => {
       cleanupCompleted: true,
       clearanceRepairCompleted: true,
     });
-    return solver.getOutput();
+    return solver;
   };
 
-  expect(solveAtBudget()).toEqual(traces);
-  const output = solveAtBudget(true);
+  const disabled = solveAtBudget();
+  const enabled = solveAtBudget(true);
+  expect(disabled.getOutput()).toEqual(traces);
+  const output = enabled.getOutput();
   expect(output).toEqual([trace("clear", 0, 0.8, 0.8), ...traces.slice(1)]);
   expect(
     new PhysicalConnectivityInvariant(input, traces).validate(output).safe,
   ).toBe(true);
+
+  const fixedWire = blocker.route.filter((point) => point.route_type === "wire");
+  const panels = [disabled, enabled].map((solver) => {
+    const graphics = solver.visualize();
+    return {
+      ...graphics,
+      lines: [
+        ...graphics.lines!,
+        { points: fixedWire, strokeWidth: fixedWire[0]!.width, strokeColor: "#475569" },
+      ],
+    };
+  });
+  const comparison = stackGraphicsHorizontally(panels, {
+    titles: ["Widening disabled", "Widening enabled"],
+  });
+  await expect(
+    getSvgFromGraphicsObject(comparison, {
+      backgroundColor: "white",
+      svgWidth: 940,
+      svgHeight: 430,
+    }),
+  ).toMatchSvgSnapshot(import.meta.path, "widen-in-place");
 });
 
 test("budget widening checks the reversed envelopes of the branch and its peers", () => {
