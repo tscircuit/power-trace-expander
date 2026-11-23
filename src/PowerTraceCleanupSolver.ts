@@ -450,9 +450,12 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         distance(a.point, context.via) - distance(b.point, context.via),
     );
     for (const candidate of candidates) {
-      if (this.isViaRepairPointSafe(context, candidate.point, padClearance)) {
-        return this.createViaRepairReplacement(context, candidate.point);
-      }
+      const replacement = this.getViaRepairReplacement(
+        context,
+        candidate.point,
+        padClearance,
+      );
+      if (replacement) return replacement;
     }
     return null;
   }
@@ -500,7 +503,7 @@ export class PowerTraceCleanupSolver extends BaseSolver {
       if (blockers.size === 0 || blockers.size > 2) return [];
       const ignoredTraceIndices = [...blockers];
       if (
-        !this.isViaRepairPointSafe(
+        !this.getViaRepairReplacement(
           context,
           point,
           padClearance,
@@ -691,12 +694,12 @@ export class PowerTraceCleanupSolver extends BaseSolver {
     ];
   }
 
-  private isViaRepairPointSafe(
+  private getViaRepairReplacement(
     context: ViaRepairContext,
     point: Point,
     padClearance: number,
     ignoreTraceIndices?: number[],
-  ) {
+  ): ViaRepairReplacement | null {
     const traceIndex = this.viaRepairTraceIndices[this.traceCursor];
     if (
       this.obstacleIndex.collidesVia({
@@ -713,35 +716,50 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         sameNetObstacleClearance: 0,
       })
     ) {
-      return false;
+      return null;
     }
-    return !this.getViaRepairCollisionQueries(
-      context,
-      point,
-      padClearance,
-      ignoreTraceIndices,
-    )
-      .slice(this.obstacleIndex.boardLayers.length)
-      .some((query) => this.obstacleIndex.collides(query));
-  }
-
-  private createViaRepairReplacement(
-    context: ViaRepairContext,
-    point: Point,
-  ): ViaRepairReplacement {
-    const movedLeft: WireRoutePoint = { ...context.leftWire, ...point };
-    const movedVia: ViaRoutePoint = { ...context.via, ...point };
-    const movedRight: WireRoutePoint = { ...context.rightWire, ...point };
+    const sides = [
+      { start: context.leftAnchor, end: point, wire: context.leftWire },
+      { start: point, end: context.rightAnchor, wire: context.rightWire },
+    ];
+    const paths = sides.map(({ start, end, wire }) => {
+      if (
+        this.inputProblem.requireOctilinearViaApproaches &&
+        distance(start, end) <= WIDTH_EPSILON
+      )
+        return [start];
+      const candidates = this.inputProblem.requireOctilinearViaApproaches
+        ? calculateOctilinearPaths(start, end)
+        : [[start, end]];
+      return candidates.find((path) =>
+        path.slice(1).every(
+          (next, index) =>
+            !this.obstacleIndex.collides({
+              start: path[index]!,
+              end: next,
+              layer: wire.layer,
+              width: wire.width,
+              connectionNames: context.connectionNames,
+              ignoreTraceIndex: traceIndex,
+              ignoreTraceIndices,
+              ignoreRouteRange: context.ignoreRouteRange,
+              obstacleClearance: padClearance,
+            }),
+        ),
+      );
+    });
+    const [leftPath, rightPath] = paths;
+    if (!leftPath || !rightPath) return null;
+    const left = (context.leftIsEndpoint ? leftPath : leftPath.slice(1)).map(
+      (point): WireRoutePoint => ({ ...context.leftWire, ...point }),
+    );
+    const right = (
+      context.rightIsEndpoint ? rightPath : rightPath.slice(0, -1)
+    ).map((point): WireRoutePoint => ({ ...context.rightWire, ...point }));
     return {
       startIndex: context.viaIndex - 1,
       endIndex: context.viaIndex + 1,
-      route: [
-        ...(context.leftIsEndpoint ? [context.leftWire] : []),
-        movedLeft,
-        movedVia,
-        movedRight,
-        ...(context.rightIsEndpoint ? [context.rightWire] : []),
-      ],
+      route: [...left, { ...context.via, ...point }, ...right],
     };
   }
 
@@ -780,14 +798,14 @@ export class PowerTraceCleanupSolver extends BaseSolver {
         const context = trace
           ? this.createViaRepairContext(trace, repair.viaIndex)
           : null;
-        if (
-          context &&
-          this.isViaRepairPointSafe(context, repair.point, repair.padClearance)
-        ) {
-          const replacement = this.createViaRepairReplacement(
-            context,
-            repair.point,
-          );
+        const replacement = context
+          ? this.getViaRepairReplacement(
+              context,
+              repair.point,
+              repair.padClearance,
+            )
+          : null;
+        if (replacement) {
           trace!.route.splice(
             replacement.startIndex,
             replacement.endIndex - replacement.startIndex + 1,
