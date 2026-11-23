@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import "bun-match-svg";
-import { getSvgFromGraphicsObject } from "graphics-debug";
+import {
+  getSvgFromGraphicsObject,
+  stackGraphicsHorizontally,
+} from "graphics-debug";
 import {
   measureTraceWidths,
   PowerTraceExpanderSolver,
@@ -8,7 +11,7 @@ import {
 } from "../src";
 import type { SimplifiedPcbTrace } from "../src/types";
 
-test("a shared net loses its supply branch's requested width", async () => {
+test("expands one branch of a shared net to its own requested width", async () => {
   const wire = (x: number, y = 0) => ({
     route_type: "wire" as const,
     x,
@@ -16,7 +19,7 @@ test("a shared net loses its supply branch's requested width", async () => {
     width: 0.15,
     layer: "top",
   });
-  const traces: Array<SimplifiedPcbTrace & { nominalTraceWidth: number }> = [
+  const traces: SimplifiedPcbTrace[] = [
     {
       type: "pcb_trace",
       pcb_trace_id: "sense",
@@ -54,6 +57,7 @@ test("a shared net loses its supply branch's requested width", async () => {
     traces,
   };
   const solver = new PowerTraceExpanderSolver(input, { allowNewVias: false });
+  const before = solver.visualize();
   solver.solve();
 
   expect(solver.solved, solver.error ?? "").toBe(true);
@@ -66,26 +70,18 @@ test("a shared net loses its supply branch's requested width", async () => {
   );
   expect(supplyWires.length).toBeGreaterThanOrEqual(2);
   expect(new Set(supplyWires.map((point) => point.width))).toEqual(
-    new Set([0.15]),
+    new Set([0.8]),
   );
   expect(imported).toEqual(traces[2]);
-  expect([...measureTraceWidths(input, output).keys()]).toEqual([0.15]);
-  const graphics = solver.visualize();
-  graphics.texts = [
-    {
-      x: -1.5,
-      y: -0.4,
-      text: `Supply · ${supplyWires[0]!.width} of ${traces[1]!.nominalTraceWidth.toFixed(2)} mm`,
-      fontSize: 0.22,
-    },
-    { x: 1.5, y: -0.4, text: "Sense · 0.15 mm", fontSize: 0.22 },
-    { x: 0, y: 2.35, text: "Imported copper", fontSize: 0.22 },
-  ];
+  expect([...measureTraceWidths(input, output).keys()]).toEqual([0.15, 0.8]);
+  const comparison = stackGraphicsHorizontally([before, solver.visualize()], {
+    titles: ["Input copper", "Expanded copper"],
+  });
   await expect(
-    getSvgFromGraphicsObject(graphics, {
+    getSvgFromGraphicsObject(comparison, {
       backgroundColor: "white",
-      svgWidth: 580,
-      svgHeight: 290,
+      svgWidth: 900,
+      svgHeight: 260,
     }),
   ).toMatchSvgSnapshot(import.meta.path);
 });

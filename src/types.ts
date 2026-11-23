@@ -26,6 +26,8 @@ export type SimplifiedPcbTrace = {
   rootConnectionName?: string;
   mergedConnectionNames?: string[];
   connectsTo?: string[];
+  /** Requested width of this routed branch, when it differs from the net. */
+  nominalTraceWidth?: number;
   route: Array<
     | WireRoutePoint
     | ViaRoutePoint
