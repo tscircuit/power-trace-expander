@@ -1,0 +1,44 @@
+<svg width="940" height="460" viewBox="0 0 940 460" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><g><polyline data-points="2,5 6,5" data-type="line" data-label="" points="155.20710059171597,195.1479289940828 335.0887573964497,195.1479289940828" fill="none" stroke="#087f5b" stroke-width="17.988165680473376"/></g><g><polyline data-points="2.5,3.4 2.5,4.05" data-type="line" data-label="" points="177.69230769230768,267.1005917159763 177.69230769230768,237.8698224852071" fill="none" stroke="#087f5b" stroke-width="17.988165680473376"/></g><g><polyline data-points="2.55,6.1 2.55,6.75" data-type="line" data-label="" points="179.94082840236683,145.68047337278102 179.94082840236683,116.4497041420118" fill="none" stroke="#087f5b" stroke-width="17.988165680473376"/></g><g><polyline data-points="4,6.1 4,6.75" data-type="line" data-label="" points="245.14792899408283,145.68047337278102 245.14792899408283,116.4497041420118" fill="none" stroke="#087f5b" stroke-width="17.988165680473376"/></g><g><polyline data-points="12,5 16,5" data-type="line" data-label="" points="604.9112426035504,195.1479289940828 784.792899408284,195.1479289940828" fill="none" stroke="#b91c1c" stroke-width="17.988165680473376"/></g><g><polyline data-points="12.5,3.4 12.5,4.05" data-type="line" data-label="" points="627.396449704142,267.1005917159763 627.396449704142,237.8698224852071" fill="none" stroke="#087f5b" stroke-width="17.988165680473376"/></g><g><polyline data-points="12.55,6.1 12.55,6.75" data-type="line" data-label="" points="629.6449704142012,145.68047337278102 629.6449704142012,116.4497041420118" fill="none" stroke="#b91c1c" stroke-width="17.988165680473376"/></g><g><polyline data-points="14,6.1 14,6.75" data-type="line" data-label="" points="694.8520710059172,145.68047337278102 694.8520710059172,116.4497041420118" fill="none" stroke="#b91c1c" stroke-width="17.988165680473376"/></g><g><polygon data-type="polygon" data-label="" data-points="0,0 8,0 8,8 5,8 5,3 3,3 3,8 0,8" points="65.26627218934908,420 425.0295857988166,420 425.0295857988166,60.2366863905325 290.1183431952663,60.2366863905325 290.1183431952663,285.0887573964497 200.1775147928994,285.0887573964497 200.1775147928994,60.2366863905325 65.26627218934908,60.2366863905325" fill="rgba(71,85,105,0.09)" stroke="#475569" stroke-width="1.7988165680473376"/></g><g><polygon data-type="polygon" data-label="" data-points="10,0 18,0 18,8 15,8 15,3 13,3 13,8 10,8" points="514.9704142011835,420 874.7337278106509,420 874.7337278106509,60.2366863905325 739.8224852071007,60.2366863905325 739.8224852071007,285.0887573964497 649.8816568047337,285.0887573964497 649.8816568047337,60.2366863905325 514.9704142011835,60.2366863905325" fill="rgba(71,85,105,0.09)" stroke="#475569" stroke-width="1.7988165680473376"/></g><circle data-type="circle" data-label="" data-x="2.5" data-y="4.45" cx="177.69230769230768" cy="219.8816568047337" r="8.994082840236688" fill="#087f5b" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="2.5" data-y="4.45" cx="177.69230769230768" cy="219.8816568047337" r="4.497041420118344" fill="white" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="2.55" data-y="7.1499999999999995" cx="179.94082840236683" cy="98.46153846153845" r="8.994082840236688" fill="#087f5b" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="2.55" data-y="7.1499999999999995" cx="179.94082840236683" cy="98.46153846153845" r="4.497041420118344" fill="white" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="4" data-y="7.1499999999999995" cx="245.14792899408283" cy="98.46153846153845" r="8.994082840236688" fill="#087f5b" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="4" data-y="7.1499999999999995" cx="245.14792899408283" cy="98.46153846153845" r="4.497041420118344" fill="white" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="12.5" data-y="4.45" cx="627.396449704142" cy="219.8816568047337" r="8.994082840236688" fill="#087f5b" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="12.5" data-y="4.45" cx="627.396449704142" cy="219.8816568047337" r="4.497041420118344" fill="white" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="12.55" data-y="7.1499999999999995" cx="629.6449704142012" cy="98.46153846153845" r="8.994082840236688" fill="#b91c1c" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="12.55" data-y="7.1499999999999995" cx="629.6449704142012" cy="98.46153846153845" r="4.497041420118344" fill="white" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="14" data-y="7.1499999999999995" cx="694.8520710059172" cy="98.46153846153845" r="8.994082840236688" fill="#b91c1c" stroke="black" stroke-width="0.022236842105263156"/><circle data-type="circle" data-label="" data-x="14" data-y="7.1499999999999995" cx="694.8520710059172" cy="98.46153846153845" r="4.497041420118344" fill="white" stroke="black" stroke-width="0.022236842105263156"/><text data-type="text" data-label="Rectangular bounds" data-x="4" data-y="8.45" x="245.14792899408283" y="40" fill="black" font-size="20.236686390532547" font-family="sans-serif" text-anchor="middle" dominant-baseline="text-after-edge">Rectangular bounds</text><text data-type="text" data-label="Physical board outline" data-x="14" data-y="8.45" x="694.8520710059172" y="40" fill="black" font-size="20.236686390532547" font-family="sans-serif" text-anchor="middle" dominant-baseline="text-after-edge">Physical board outline</text><g id="crosshair" style="display: none"><line id="crosshair-h" y1="0" y2="460" stroke="#666" stroke-width="0.5"/><line id="crosshair-v" x1="0" x2="940" stroke="#666" stroke-width="0.5"/><text id="coordinates" font-family="monospace" font-size="12" fill="#666"></text></g><script><![CDATA[
+              document.currentScript.parentElement.addEventListener('mousemove', (e) => {
+                const svg = e.currentTarget;
+                const rect = svg.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const crosshair = svg.getElementById('crosshair');
+                const h = svg.getElementById('crosshair-h');
+                const v = svg.getElementById('crosshair-v');
+                const coords = svg.getElementById('coordinates');
+                
+                crosshair.style.display = 'block';
+                h.setAttribute('x1', '0');
+                h.setAttribute('x2', '940');
+                h.setAttribute('y1', y);
+                h.setAttribute('y2', y);
+                v.setAttribute('x1', x);
+                v.setAttribute('x2', x);
+                v.setAttribute('y1', '0');
+                v.setAttribute('y2', '460');
+
+                // Calculate real coordinates using inverse transformation
+                const matrix = {"a":44.97041420118344,"c":0,"e":65.26627218934908,"b":0,"d":-44.97041420118344,"f":420};
+                // Manually invert and apply the affine transform
+                // Since we only use translate and scale, we can directly compute:
+                // x' = (x - tx) / sx
+                // y' = (y - ty) / sy
+                const sx = matrix.a;
+                const sy = matrix.d;
+                const tx = matrix.e; 
+                const ty = matrix.f;
+                const realPoint = {
+                  x: (x - tx) / sx,
+                  y: (y - ty) / sy // Flip y back since we used negative scale
+                }
+                
+                coords.textContent = `(${realPoint.x.toFixed(2)}, ${realPoint.y.toFixed(2)})`;
+                coords.setAttribute('x', (x + 5).toString());
+                coords.setAttribute('y', (y - 5).toString());
+              });
+              document.currentScript.parentElement.addEventListener('mouseleave', () => {
+                document.currentScript.parentElement.getElementById('crosshair').style.display = 'none';
+              });
+            ]]></script></svg>
