@@ -1,4 +1,9 @@
 import { expect, test } from "bun:test";
+import "bun-match-svg";
+import {
+  getSvgFromGraphicsObject,
+  stackGraphicsHorizontally,
+} from "graphics-debug";
 import {
   measureTraceWidths,
   PowerTraceExpanderSolver,
@@ -6,7 +11,7 @@ import {
 } from "../src";
 import type { SimplifiedPcbTrace } from "../src/types";
 
-test("expands one branch of a shared net to its own requested width", () => {
+test("expands one branch of a shared net to its own requested width", async () => {
   const wire = (x: number, y = 0) => ({
     route_type: "wire" as const,
     x,
@@ -52,6 +57,7 @@ test("expands one branch of a shared net to its own requested width", () => {
     traces,
   };
   const solver = new PowerTraceExpanderSolver(input, { allowNewVias: false });
+  const before = solver.visualize();
   solver.solve();
 
   expect(solver.solved, solver.error ?? "").toBe(true);
@@ -68,4 +74,14 @@ test("expands one branch of a shared net to its own requested width", () => {
   );
   expect(imported).toEqual(traces[2]);
   expect([...measureTraceWidths(input, output).keys()]).toEqual([0.15, 0.8]);
+  const comparison = stackGraphicsHorizontally([before, solver.visualize()], {
+    titles: ["Input copper", "Expanded copper"],
+  });
+  await expect(
+    getSvgFromGraphicsObject(comparison, {
+      backgroundColor: "white",
+      svgWidth: 900,
+      svgHeight: 260,
+    }),
+  ).toMatchSvgSnapshot(import.meta.path);
 });
