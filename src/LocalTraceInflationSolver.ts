@@ -94,7 +94,14 @@ export class LocalTraceInflationSolver extends BaseSolver {
     ),
   ) {
     super();
-    this.inputProblem = structuredClone(inputProblem);
+    this.inputProblem = {
+      ...inputProblem,
+      simpleRouteJson: {
+        ...inputProblem.simpleRouteJson,
+        traces: structuredClone(inputProblem.simpleRouteJson.traces),
+      },
+      traces: structuredClone(inputProblem.traces),
+    };
     this.traces = this.inputProblem.traces.slice();
     this.corridor = structuredClone(inputProblem.corridor);
     this.mutableTraceIndices = inputProblem.mutableTraceIndices
