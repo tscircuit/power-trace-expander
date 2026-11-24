@@ -205,16 +205,22 @@ export const measureTraceWidths = (
             metric.segments.length === 0
               ? nominalWidth
               : Math.min(...metric.segments.map((segment) => segment.width)),
-          p05Width: getLengthWeightedPercentile(
-            metric.segments,
-            metric.totalLength,
-            0.05,
-          ),
-          p10Width: getLengthWeightedPercentile(
-            metric.segments,
-            metric.totalLength,
-            0.1,
-          ),
+          p05Width:
+            metric.segments.length === 0
+              ? nominalWidth
+              : getLengthWeightedPercentile(
+                  metric.segments,
+                  metric.totalLength,
+                  0.05,
+                ),
+          p10Width:
+            metric.segments.length === 0
+              ? nominalWidth
+              : getLengthWeightedPercentile(
+                  metric.segments,
+                  metric.totalLength,
+                  0.1,
+                ),
           widthDeficitArea,
           normalizedWidthDeficit:
             metric.totalLength === 0
